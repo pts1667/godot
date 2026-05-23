@@ -1,0 +1,61 @@
+#pragma once
+
+#include "VTF.h"
+
+namespace vtfpp {
+
+constexpr uint32_t TTH_SIGNATURE = sourcepp::parser::binary::makeFourCC("TTH\0");
+
+class TTX {
+public:
+	explicit TTX(VTF&& vtf_);
+
+	explicit TTX(std::span<const std::byte> tthData, std::span<const std::byte> ttzData = {});
+
+	explicit TTX(const std::filesystem::path& tthPath, const std::filesystem::path& ttzPath = {});
+
+	[[nodiscard]] explicit operator bool() const;
+
+	[[nodiscard]] uint8_t getMajorVersion() const;
+
+	[[nodiscard]] uint8_t getMinorVersion() const;
+
+	void setVersion(uint8_t newMajorVersion, uint8_t newMinorVersion);
+
+	void setMajorVersion(uint8_t newMajorVersion);
+
+	void setMinorVersion(uint8_t newMinorVersion);
+
+	[[nodiscard]] uint8_t getAspectRatioType() const;
+
+	void setAspectRatioType(uint8_t newAspectRatioType);
+
+	[[nodiscard]] const std::vector<uint64_t>& getMipFlags() const;
+
+	[[nodiscard]] std::vector<uint64_t>& getMipFlags();
+
+	[[nodiscard]] const VTF& getVTF() const;
+
+	[[nodiscard]] VTF& getVTF();
+
+	[[nodiscard]] int16_t getCompressionLevel() const;
+
+	void setCompressionLevel(int16_t newCompressionLevel);
+
+	[[nodiscard]] std::pair<std::vector<std::byte>, std::vector<std::byte>> bake() const;
+
+	bool bake(const std::filesystem::path& tthPath, const std::filesystem::path& ttzPath) const; // NOLINT(*-use-nodiscard)
+
+protected:
+	bool opened = false;
+	int16_t compressionLevel = -1;
+
+	VTF vtf;
+
+	uint8_t majorVersion = 1;
+	uint8_t minorVersion = 0;
+	uint8_t aspectRatioType{};
+	std::vector<uint64_t> mipFlags;
+};
+
+} // namespace vtfpp

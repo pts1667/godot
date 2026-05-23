@@ -1,0 +1,48 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+Import("env_modules")
+
+env_sourcepp = env_modules.Clone()
+
+if env.msvc:
+	env_sourcepp.AppendUnique(CXXFLAGS=["/std:c++20"])
+else:
+	env_sourcepp.AppendUnique(CXXFLAGS=["-std=c++20"])
+
+thirdparty_obj = []
+
+thirdparty_dir = "#thirdparty/sourcepp/"
+thirdparty_sources = [
+	thirdparty_dir + "src/sourcepp/FS.cpp",
+	thirdparty_dir + "src/sourcepp/String.cpp",
+	thirdparty_dir + "src/sourcepp/parser/Text.cpp",
+	thirdparty_dir + "src/sourcepp/crypto/AES.cpp",
+	thirdparty_dir + "src/sourcepp/crypto/Adler32.cpp",
+	thirdparty_dir + "src/sourcepp/crypto/CRC32.cpp",
+	thirdparty_dir + "src/sourcepp/crypto/MD5.cpp",
+	thirdparty_dir + "src/sourcepp/crypto/RSA.cpp",
+	thirdparty_dir + "src/sourcepp/crypto/SHA1.cpp",
+	thirdparty_dir + "src/sourcepp/crypto/SHA256.cpp",
+	thirdparty_dir + "src/vpkpp/PackFile.cpp",
+	thirdparty_dir + "src/vpkpp/format/VPK.cpp",
+]
+
+env_sourcepp.Prepend(CPPPATH=[
+	"#thirdparty/bufferstream/include",
+	"#thirdparty/mbedtls/include",
+	thirdparty_dir + "include",
+	thirdparty_dir + "ext/half/include",
+])
+
+env_thirdparty = env_sourcepp.Clone()
+env_thirdparty.disable_warnings()
+env_thirdparty.add_source_files(thirdparty_obj, thirdparty_sources)
+env.modules_sources += thirdparty_obj
+
+module_obj = []
+env_sourcepp.add_source_files(module_obj, "*.cpp")
+env.modules_sources += module_obj
+
+env.Depends(module_obj, thirdparty_obj)

@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPVPK" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Allows reading and writing standard VPK archives through the bundled SourcePP library.
+	</brief_description>
+	<description>
+		[SourcePPVPK] exposes a first-cut wrapper over SourcePP's VPK support for scripts.
+		It can open existing VPK archives, create new ones, inspect files, read file contents, queue changes, and bake the archive back to disk.
+		[codeblock]
+		var vpk := SourcePPVPK.new()
+		if vpk.open("user://pak01_dir.vpk") != OK:
+			return
+
+		for path in vpk.get_files():
+			print(path)
+
+		var data := vpk.read_file("scripts/gameinfo.txt")
+		vpk.add_file_from_buffer("scripts/copied.bin", data)
+		vpk.bake()
+		[/codeblock]
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="add_directory">
+			<return type="int" />
+			<param index="0" name="entry_base_dir" type="String" />
+			<param index="1" name="source_dir" type="String" />
+			<param index="2" name="preload_bytes" type="int" default="0" />
+			<param index="3" name="save_to_directory" type="bool" default="false" />
+			<description>
+				Adds the contents of [param source_dir] to the archive under [param entry_base_dir]. Returns the number of files added, or [code]-1[/code] on failure.
+			</description>
+		</method>
+		<method name="add_file">
+			<return type="bool" />
+			<param index="0" name="entry_path" type="String" />
+			<param index="1" name="source_path" type="String" />
+			<param index="2" name="preload_bytes" type="int" default="0" />
+			<param index="3" name="save_to_directory" type="bool" default="false" />
+			<description>
+				Queues a file from disk to be written into the archive at [param entry_path].
+			</description>
+		</method>
+		<method name="add_file_from_buffer">
+			<return type="bool" />
+			<param index="0" name="entry_path" type="String" />
+			<param index="1" name="data" type="PackedByteArray" />
+			<param index="2" name="preload_bytes" type="int" default="0" />
+			<param index="3" name="save_to_directory" type="bool" default="false" />
+			<description>
+				Queues [param data] to be written into the archive at [param entry_path].
+			</description>
+		</method>
+		<method name="bake">
+			<return type="int" enum="Error" />
+			<param index="0" name="output_dir" type="String" default="&quot;&quot;" />
+			<param index="1" name="generate_md5_entries" type="bool" default="false" />
+			<description>
+				Writes the queued archive state to disk. If [param output_dir] is empty, the current archive is overwritten.
+			</description>
+		</method>
+		<method name="close">
+			<return type="void" />
+			<description>
+				Releases the currently loaded archive.
+			</description>
+		</method>
+		<method name="create">
+			<return type="int" enum="Error" />
+			<param index="0" name="path" type="String" />
+			<param index="1" name="version" type="int" default="2" />
+			<description>
+				Creates a new VPK archive at [param path] and opens it.
+			</description>
+		</method>
+		<method name="get_file_count">
+			<return type="int" />
+			<description>
+				Returns the total number of baked and unbaked files in the archive.
+			</description>
+		</method>
+		<method name="get_files">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the archive entry paths.
+			</description>
+		</method>
+		<method name="get_path">
+			<return type="String" />
+			<description>
+				Returns the current archive path.
+			</description>
+		</method>
+		<method name="has_file">
+			<return type="bool" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Returns [code]true[/code] if [param path] exists in the archive.
+			</description>
+		</method>
+		<method name="has_pack_checksum">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the archive format carries an overall pack checksum.
+			</description>
+		</method>
+		<method name="has_signature">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the archive currently has a signature block.
+			</description>
+		</method>
+		<method name="is_open">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if an archive is currently loaded.
+			</description>
+		</method>
+		<method name="open">
+			<return type="int" enum="Error" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Opens the VPK archive at [param path].
+			</description>
+		</method>
+		<method name="read_file">
+			<return type="PackedByteArray" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Reads the full contents of the file at [param path].
+			</description>
+		</method>
+		<method name="read_file_text">
+			<return type="String" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Reads the file at [param path] as UTF-8 text.
+			</description>
+		</method>
+		<method name="remove_directory">
+			<return type="int" />
+			<param index="0" name="directory" type="String" />
+			<description>
+				Removes all entries under [param directory] and returns the number of removed entries.
+			</description>
+		</method>
+		<method name="remove_file">
+			<return type="bool" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Removes the file at [param path] from the archive state.
+			</description>
+		</method>
+		<method name="verify_entry_checksums">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the paths of entries whose recorded checksum does not match the file contents.
+			</description>
+		</method>
+		<method name="verify_pack_checksum">
+			<return type="bool" />
+			<description>
+				Verifies the overall pack checksum if the current VPK format supports it.
+			</description>
+		</method>
+		<method name="verify_signature">
+			<return type="bool" />
+			<description>
+				Verifies the archive signature if present.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="chunk_size" type="int" setter="set_chunk_size" getter="get_chunk_size" default="0">
+			Size in bytes for generated archive chunks when baking.
+		</member>
+		<member name="version" type="int" setter="set_version" getter="get_version" default="0">
+			The VPK version used for baking.
+		</member>
+	</members>
+</class>

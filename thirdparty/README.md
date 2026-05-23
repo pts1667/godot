@@ -106,6 +106,16 @@ Files extracted from upstream source:
 - `LICENSE`
 
 
+## bufferstream
+
+- Upstream: https://github.com/craftablescience/BufferStream
+- Version: git (5c040a17417a3cef650f49c41192b2c00ac1e865, 2026)
+- License: MIT
+
+Files extracted from upstream source:
+
+- `include/*.h`
+
 ## certs
 
 - Upstream: Mozilla, via https://github.com/bagder/ca-bundle
@@ -1020,6 +1030,26 @@ Patches:
 - `0007-shield-duplicate-macos.patch` ([GH-115510](https://github.com/godotengine/godot/pull/115510))
 - `0008-fix-linux-joycon-serial-num.patch` ([GH-113873](https://github.com/godotengine/godot/pull/113873))
 - `0009-update-device-blocklist.patch` ([GH-119403](https://github.com/godotengine/godot/pull/119403))
+
+
+## sourcepp
+
+- Upstream: https://github.com/craftablescience/sourcepp
+- Version: git (aa9558dfadff608cf997127c90401fc226a09180, 2026)
+- License: MIT
+
+Files extracted from upstream source:
+
+- `include/` folder
+- `src/` folder, with CMake build files removed
+- `ext/half/include/half.hpp`
+- `ext/half/LICENSE.txt`
+- `ext/ice/include/IceKey.h`
+- `ext/ice/src/IceKey.cpp`
+- `ext/stb/include/{stb_image.h,stb_image_resize2.h,stb_image_write.h}`
+- `ext/stb/LICENSE`
+- `LICENSE`
+- `THIRDPARTY_LEGAL_NOTICES.txt`
 
 
 ## spirv-cross
