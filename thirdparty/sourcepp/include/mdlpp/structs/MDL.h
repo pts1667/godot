@@ -13,7 +13,7 @@ namespace mdlpp::MDL {
 struct Bone {
 	enum Flags : int32_t {
 		FLAG_NONE = 0,
-		// todo(flags): Bone
+		FLAG_FIXED_ALIGNMENT = 0x00100000,
 	};
 
 	//int32_t nameIndex;
@@ -62,8 +62,26 @@ struct HitboxSet {
 	std::vector<BBox> hitboxes;
 };
 
-/*
+struct Attachment {
+	enum Flags : int32_t {
+		FLAG_NONE = 0,
+		FLAG_WORLD_ALIGN = 1 << 16,
+	};
+
+	//int32_t nameIndex;
+	std::string name;
+
+	Flags flags;
+	int32_t bone;
+	sourcepp::math::Mat3x4f local;
+
+	//int32_t _unused0[8];
+};
+SOURCEPP_BITFLAGS_ENUM(Attachment::Flags)
+
 struct AnimDesc {
+	uint64_t fileOffset;
+
 	enum Flags : int32_t {
 		FLAG_NONE     = 0,
 		FLAG_RAW_POS  = 1 << 0,
@@ -86,29 +104,79 @@ struct AnimDesc {
 
 	//int32_t movementCount;
 	//int32_t movementIndex;
+	std::vector<Movement> movements;
 
-	//int32_t _unused0[6];
-
-	//int32_t animBlock;
-	//int32_t animIndex;
+	int32_t animBlock;
+	int32_t animIndex;
 
 	//int32_t ikRuleCount;
 	//int32_t ikRuleIndex;
+	int32_t ikRuleCount;
 
 	//int32_t animBlockIKRuleIndex;
 
 	//int32_t localHierarchyIndexCount;
 	//int32_t localHierarchyIndex;
+	int32_t localHierarchyCount;
+	int32_t localHierarchyIndex;
 
-	//int32_t sectionIndex;
-	//int32_t sectionFrames;
+	int32_t sectionIndex;
+	int32_t sectionFrames;
 
 	//int16_t zeroFrameSpan;
 	//int16_t zeroFrameCount;
-	//int32_t zeroFrameIndex;
+	int32_t zeroFrameIndex;
 	//float zeroFrameStallTime;
+	int16_t zeroFrameSpan;
+	int16_t zeroFrameCount;
+	float zeroFrameStallTime;
 };
-SOURCEPP_BITWISE_ENUM(AnimDesc::Flags)
+SOURCEPP_BITFLAGS_ENUM(AnimDesc::Flags)
+
+struct AnimBlock {
+	int32_t dataStart;
+	int32_t dataEnd;
+};
+
+struct Event {
+	float cycle;
+	int32_t event;
+	int32_t type;
+	std::string options;
+	std::string name;
+};
+
+struct AutoLayer {
+	int16_t sequence;
+	int16_t pose;
+	int32_t flags;
+	float start;
+	float peak;
+	float tail;
+	float end;
+};
+
+struct ActivityModifier {
+	std::string name;
+};
+
+struct IKLink {
+	int32_t bone;
+	sourcepp::math::Vec3f kneeDir;
+};
+
+struct IKChain {
+	std::string name;
+	int32_t linkType;
+	std::vector<IKLink> links;
+};
+
+struct IKLock {
+	int32_t chain;
+	float positionWeight;
+	float localQuaternionWeight;
+	int32_t flags;
+};
 
 struct SequenceDesc {
 	enum Flags : int32_t {
@@ -120,28 +188,34 @@ struct SequenceDesc {
 
 	//int32_t labelIndex;
 	//int32_t activityLabelIndex;
+	std::string label;
+	std::string activityName;
 
 	Flags flags;
 
 	//int32_t activity;
 	//int32_t activityWeight;
+	int32_t activity;
+	int32_t activityWeight;
 
 	//int32_t eventCount;
 	//int32_t eventIndex;
+	int32_t eventCount;
+	std::vector<Event> events;
 
-	sourcepp::Vec3f boundingBoxMin;
-	sourcepp::Vec3f boundingBoxMax;
+	sourcepp::math::Vec3f boundingBoxMin;
+	sourcepp::math::Vec3f boundingBoxMax;
 
 	int32_t blendCount;
 
-	int32_t animIndexIndex;
+	std::vector<int16_t> animationIndices;
 
 	int32_t movementIndex;
 
-	int32_t groupSize[2];
-	int32_t paramIndex[2];
-	float paramStart[2];
-	float paramEnd[2];
+	std::array<int32_t, 2> groupSize;
+	std::array<int32_t, 2> paramIndex;
+	std::array<float, 2> paramStart;
+	std::array<float, 2> paramEnd;
 	int32_t paramParent;
 
 	float fadeInTime;
@@ -164,23 +238,30 @@ struct SequenceDesc {
 
 	//int32_t autoLayerCount;
 	//int32_t autoLayerIndex;
+	int32_t autoLayerCount;
+	std::vector<AutoLayer> autoLayers;
 
 	int32_t weightListIndex;
+	std::vector<float> boneWeights;
 
 	int32_t poseKeyIndex;
+	std::array<std::vector<float>, 2> poseKeys;
 
 	//int32_t ikLockCount;
 	//int32_t ikLockIndex;
+	int32_t ikLockCount;
+	std::vector<IKLock> ikLocks;
 
 	//int32_t keyValueIndex;
 	//int32_t keyValueSize;
+	std::string keyValueText;
 
 	int32_t cyclePoseIndex;
+	std::vector<ActivityModifier> activityModifiers;
 
 	//int32_t _unused0[7];
 };
-SOURCEPP_BITWISE_ENUM(SequenceDesc::Flags)
-*/
+SOURCEPP_BITFLAGS_ENUM(SequenceDesc::Flags)
 
 struct Material {
 	enum Flags : int32_t {
@@ -313,9 +394,11 @@ struct MDL {
 
 	//int32_t localAnimationCount;
 	//int32_t localAnimationOffset;
+	std::vector<AnimDesc> animDescs;
 
 	//int32_t localSequenceCount;
 	//int32_t localSequenceOffset;
+	std::vector<SequenceDesc> sequenceDescs;
 
 	int32_t activityListVersion;
 	int32_t eventsIndexed;
@@ -340,6 +423,7 @@ struct MDL {
 
 	//int32_t attachmentCount;
 	//int32_t attachmentOffset;
+	std::vector<Attachment> attachments;
 
 	//int32_t localNodeCount;
 	//int32_t localNodeIndex;
@@ -356,6 +440,7 @@ struct MDL {
 
 	//int32_t ikChainCount;
 	//int32_t ikChainIndex;
+	std::vector<IKChain> ikChains;
 
 	//int32_t mouthsCount;
 	//int32_t mouthsIndex;
@@ -370,6 +455,7 @@ struct MDL {
 
 	//int32_t ikLockCount;
 	//int32_t ikLockIndex;
+	std::vector<IKLock> ikAutoplayLocks;
 
 	//float mass;
 	//int32_t contentsFlags;
@@ -380,9 +466,11 @@ struct MDL {
 	//int32_t virtualModel;
 
 	//int32_t animationBlocksNameIndex;
+	std::string animBlockName;
 
 	//int32_t animationBlocksCount;
 	//int32_t animationBlocksIndex;
+	std::vector<AnimBlock> animBlocks;
 
 	//int32_t animationBlockModel;
 

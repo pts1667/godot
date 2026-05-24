@@ -26,6 +26,20 @@ struct BakedModel {
 	std::vector<Mesh> meshes;
 };
 
+struct SampledAnimationTrack {
+	int32_t bone = -1;
+	std::vector<sourcepp::math::Vec3f> positions;
+	std::vector<sourcepp::math::Quat> rotations;
+};
+
+struct SampledAnimation {
+	int32_t animationIndex = -1;
+	float fps = 0.0f;
+	int32_t frameCount = 0;
+	MDL::AnimDesc::Flags flags = MDL::AnimDesc::FLAG_NONE;
+	std::vector<SampledAnimationTrack> tracks;
+};
+
 struct StudioModel {
 	[[nodiscard]] bool open(const std::byte* mdlData, std::size_t mdlSize,
 							const std::byte* vtxData, std::size_t vtxSize,
@@ -46,12 +60,18 @@ struct StudioModel {
 	[[nodiscard]] explicit operator bool() const;
 
 	[[nodiscard]] BakedModel processModelData(int currentLOD = ROOT_LOD) const;
+	[[nodiscard]] bool sampleAnimation(int animDescIndex, SampledAnimation& out) const;
+	[[nodiscard]] const std::vector<std::byte> &getMDLData() const { return this->mdlData; }
+	[[nodiscard]] const std::vector<std::byte> &getAnimBlockData() const { return this->animBlockData; }
+	void setAnimBlockData(const std::vector<std::byte> &p_anim_block_data) { this->animBlockData = p_anim_block_data; }
 
 	MDL::MDL mdl;
 	VTX::VTX vtx;
 	VVD::VVD vvd;
 
 private:
+	std::vector<std::byte> mdlData;
+	std::vector<std::byte> animBlockData;
 	bool opened = false;
 };
 

@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPMDL" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Allows reading Source Engine MDL model triplets through the bundled SourcePP library.
+	</brief_description>
+	<description>
+		[SourcePPMDL] exposes a first-cut wrapper over SourcePP's MDL support for scripts.
+		It opens a model from the required [code].mdl[/code], [code].vtx[/code], and [code].vvd[/code] files, exposes basic metadata, and can bake the chosen LOD into a Godot [ArrayMesh].
+		If the model references external Source animation blocks, [method open] tries to resolve the companion [code].ani[/code] blob automatically and [method open_from_buffer] can accept it explicitly.
+		If [param vtx_path] or [param vvd_path] are omitted when calling [method open], the wrapper tries to resolve common companion filenames next to the MDL automatically.
+		[codeblock]
+		var mdl := SourcePPMDL.new()
+		if mdl.open("user://props/crate01.mdl") != OK:
+			return
+
+		print(mdl.get_materials())
+		var mesh := mdl.create_mesh(0)
+		print(mesh.get_surface_count())
+		[/codeblock]
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="close">
+			<return type="void" />
+			<description>
+				Releases the currently loaded model.
+			</description>
+		</method>
+		<method name="create_mesh">
+			<return type="ArrayMesh" />
+			<param index="0" name="lod" type="int" default="0" />
+			<description>
+				Builds a Godot [ArrayMesh] for the selected LOD. One surface is created per baked MDL mesh, with surface names set from the resolved material names when available.
+			</description>
+		</method>
+		<method name="create_sequence_animation">
+			<return type="Animation" />
+			<param index="0" name="sequence_descriptor" type="int" />
+			<param index="1" name="skeleton_path" type="NodePath" default="NodePath(&quot;.&quot;)" />
+			<param index="2" name="blend_x" type="int" default="0" />
+			<param index="3" name="blend_y" type="int" default="0" />
+			<description>
+				Builds a Godot [Animation] for the selected sequence blend by sampling the referenced local animation descriptor and creating [code]TYPE_POSITION_3D[/code] and [code]TYPE_ROTATION_3D[/code] tracks against [param skeleton_path]. Sequence events are added as animation markers.
+				If the model references external Source animation blocks, [method open] tries to resolve the companion [code].ani[/code] blob automatically.
+			</description>
+		</method>
+		<method name="get_attachment_count">
+			<return type="int" />
+			<description>
+				Returns the number of parsed attachments.
+			</description>
+		</method>
+		<method name="get_attachments">
+			<return type="Array" />
+			<description>
+				Returns the parsed attachments as dictionaries. Each dictionary contains [code]name[/code], [code]flags[/code], [code]bone[/code], [code]bone_name[/code], and [code]transform[/code].
+			</description>
+		</method>
+		<method name="get_animation_descriptor_count">
+			<return type="int" />
+			<description>
+				Returns the number of parsed local animation descriptors.
+			</description>
+		</method>
+		<method name="get_animation_descriptors">
+			<return type="Array" />
+			<description>
+				Returns parsed animation descriptors as dictionaries. Each dictionary contains [code]name[/code], [code]fps[/code], [code]flags[/code], [code]frame_count[/code], [code]anim_block[/code], [code]anim_index[/code], [code]ik_rule_count[/code], [code]local_hierarchy_count[/code], [code]section_index[/code], [code]section_frames[/code], [code]zero_frame_span[/code], [code]zero_frame_count[/code], [code]zero_frame_index[/code], [code]zero_frame_stall_time[/code], [code]has_inline_animation_data[/code], and [code]movements[/code].
+			</description>
+		</method>
+		<method name="get_animation_data">
+			<return type="Dictionary" />
+			<param index="0" name="animation_descriptor" type="int" />
+			<description>
+				Samples a local animation descriptor into import-friendly data. The returned dictionary contains [code]animation_descriptor[/code], [code]fps[/code], [code]frame_count[/code], [code]flags[/code], [code]length[/code], and [code]tracks[/code].
+				Each entry in [code]tracks[/code] is a dictionary with [code]bone[/code], [code]bone_name[/code], [code]positions[/code] as a [PackedVector3Array], and [code]rotations[/code] as an [Array] of [Quaternion] values.
+				If the model references external Source animation blocks, [method open] tries to resolve the companion [code].ani[/code] blob automatically.
+			</description>
+		</method>
+		<method name="get_body_parts">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the MDL body part names.
+			</description>
+		</method>
+		<method name="get_bone_names">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the parsed bone names.
+			</description>
+		</method>
+		<method name="get_checksum">
+			<return type="int" />
+			<description>
+				Returns the MDL checksum value used to match companion files.
+			</description>
+		</method>
+		<method name="get_hitbox_set_count">
+			<return type="int" />
+			<description>
+				Returns the number of parsed hitbox sets.
+			</description>
+		</method>
+		<method name="get_hitbox_set_names">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the hitbox set names.
+			</description>
+		</method>
+		<method name="get_hitboxes">
+			<return type="Array" />
+			<param index="0" name="hitbox_set" type="int" default="0" />
+			<description>
+				Returns the hitboxes for the requested set as dictionaries. Each dictionary contains [code]name[/code], [code]bone[/code], [code]bone_name[/code], [code]group[/code], [code]min[/code], and [code]max[/code].
+			</description>
+		</method>
+		<method name="get_lod_count">
+			<return type="int" />
+			<description>
+				Returns the number of available LODs according to the VTX data.
+			</description>
+		</method>
+		<method name="get_material_directories">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the material search directories stored in the MDL.
+			</description>
+		</method>
+		<method name="get_materials">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the material names referenced by the model.
+			</description>
+		</method>
+		<method name="get_mdl_path">
+			<return type="String" />
+			<description>
+				Returns the last opened MDL path, or an empty string if the model was loaded from memory.
+			</description>
+		</method>
+		<method name="get_name">
+			<return type="String" />
+			<description>
+				Returns the MDL header name.
+			</description>
+		</method>
+		<method name="get_sequence_descriptor_count">
+			<return type="int" />
+			<description>
+				Returns the number of parsed local sequence descriptors.
+			</description>
+		</method>
+		<method name="get_sequence_descriptors">
+			<return type="Array" />
+			<description>
+				Returns parsed sequence descriptors as dictionaries. Each dictionary contains [code]label[/code], [code]activity_name[/code], [code]flags[/code], [code]activity[/code], [code]activity_weight[/code], [code]event_count[/code], [code]bounding_box_min[/code], [code]bounding_box_max[/code], [code]blend_count[/code], [code]group_size[/code], [code]param_index[/code], [code]param_start[/code], [code]param_end[/code], [code]param_parent[/code], [code]fade_in_time[/code], [code]fade_out_time[/code], [code]local_entry_node[/code], [code]local_exit_node[/code], [code]node_flags[/code], [code]entry_phase[/code], [code]exit_phase[/code], [code]last_frame[/code], [code]next_sequence[/code], [code]pose[/code], [code]ik_rule_count[/code], [code]auto_layer_count[/code], [code]ik_lock_count[/code], [code]cycle_pose_index[/code], [code]animation_indices[/code], [code]events[/code], [code]auto_layers[/code], [code]bone_weights[/code], [code]pose_keys[/code], [code]activity_modifiers[/code], and [code]key_value_text[/code].
+			</description>
+		</method>
+		<method name="get_skin_families">
+			<return type="Array" />
+			<description>
+				Returns the parsed skin families. Each entry is a [PackedInt32Array] of material indices into [method get_materials].
+			</description>
+		</method>
+		<method name="get_surface_count">
+			<return type="int" />
+			<param index="0" name="lod" type="int" default="0" />
+			<description>
+				Returns the number of baked mesh surfaces for the selected LOD.
+			</description>
+		</method>
+		<method name="get_surface_material_indices">
+			<return type="PackedInt32Array" />
+			<param index="0" name="lod" type="int" default="0" />
+			<description>
+				Returns the material indices for the baked surfaces at the selected LOD.
+			</description>
+		</method>
+		<method name="get_surface_materials">
+			<return type="PackedStringArray" />
+			<param index="0" name="lod" type="int" default="0" />
+			<description>
+				Returns the resolved material names for the baked surfaces at the selected LOD.
+			</description>
+		</method>
+		<method name="get_vertex_count">
+			<return type="int" />
+			<param index="0" name="lod" type="int" default="0" />
+			<description>
+				Returns the baked vertex count for the selected LOD.
+			</description>
+		</method>
+		<method name="get_version">
+			<return type="int" />
+			<description>
+				Returns the parsed MDL version.
+			</description>
+		</method>
+		<method name="get_vtx_path">
+			<return type="String" />
+			<description>
+				Returns the last opened VTX companion path, or an empty string if the model was loaded from memory.
+			</description>
+		</method>
+		<method name="get_vvd_path">
+			<return type="String" />
+			<description>
+				Returns the last opened VVD companion path, or an empty string if the model was loaded from memory.
+			</description>
+		</method>
+		<method name="is_open">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if a model is currently loaded.
+			</description>
+		</method>
+		<method name="open">
+			<return type="int" enum="Error" />
+			<param index="0" name="mdl_path" type="String" />
+			<param index="1" name="vtx_path" type="String" default="&quot;&quot;" />
+			<param index="2" name="vvd_path" type="String" default="&quot;&quot;" />
+			<description>
+				Opens a model from disk. If [param vtx_path] or [param vvd_path] are empty, common companion filenames next to [param mdl_path] are tried automatically.
+			</description>
+		</method>
+		<method name="open_from_buffer">
+			<return type="int" enum="Error" />
+			<param index="0" name="mdl_data" type="PackedByteArray" />
+			<param index="1" name="vtx_data" type="PackedByteArray" />
+			<param index="2" name="vvd_data" type="PackedByteArray" />
+			<param index="3" name="anim_block_data" type="PackedByteArray" default="PackedByteArray()" />
+			<description>
+				Opens a model from in-memory MDL, VTX, and VVD bytes. If the model references external Source animation blocks, pass the companion [code].ani[/code] blob in [param anim_block_data].
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="attachment_count" type="int" getter="get_attachment_count" default="0">
+			The number of parsed attachments.
+		</member>
+		<member name="animation_descriptor_count" type="int" getter="get_animation_descriptor_count" default="0">
+			The number of parsed local animation descriptors.
+		</member>
+		<member name="checksum" type="int" getter="get_checksum" default="0">
+			The parsed MDL checksum.
+		</member>
+		<member name="hitbox_set_count" type="int" getter="get_hitbox_set_count" default="0">
+			The number of parsed hitbox sets.
+		</member>
+		<member name="lod_count" type="int" getter="get_lod_count" default="0">
+			The number of available LODs.
+		</member>
+		<member name="mdl_path" type="String" getter="get_mdl_path" default="&quot;&quot;">
+			The last opened MDL path.
+		</member>
+		<member name="name" type="String" getter="get_name" default="&quot;&quot;">
+			The parsed MDL header name.
+		</member>
+		<member name="sequence_descriptor_count" type="int" getter="get_sequence_descriptor_count" default="0">
+			The number of parsed local sequence descriptors.
+		</member>
+		<member name="version" type="int" getter="get_version" default="0">
+			The parsed MDL version.
+		</member>
+		<member name="vtx_path" type="String" getter="get_vtx_path" default="&quot;&quot;">
+			The last opened VTX companion path.
+		</member>
+		<member name="vvd_path" type="String" getter="get_vvd_path" default="&quot;&quot;">
+			The last opened VVD companion path.
+		</member>
+	</members>
+</class>

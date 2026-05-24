@@ -17,6 +17,7 @@ thirdparty_dir = "#thirdparty/sourcepp/"
 thirdparty_sources = [
 	thirdparty_dir + "src/sourcepp/FS.cpp",
 	thirdparty_dir + "src/sourcepp/String.cpp",
+	thirdparty_dir + "src/sourcepp/parser/Binary.cpp",
 	thirdparty_dir + "src/sourcepp/parser/Text.cpp",
 	thirdparty_dir + "src/sourcepp/crypto/AES.cpp",
 	thirdparty_dir + "src/sourcepp/crypto/Adler32.cpp",
@@ -25,6 +26,10 @@ thirdparty_sources = [
 	thirdparty_dir + "src/sourcepp/crypto/RSA.cpp",
 	thirdparty_dir + "src/sourcepp/crypto/SHA1.cpp",
 	thirdparty_dir + "src/sourcepp/crypto/SHA256.cpp",
+	thirdparty_dir + "src/mdlpp/mdlpp.cpp",
+	thirdparty_dir + "src/mdlpp/structs/MDL.cpp",
+	thirdparty_dir + "src/mdlpp/structs/VTX.cpp",
+	thirdparty_dir + "src/mdlpp/structs/VVD.cpp",
 	thirdparty_dir + "src/vpkpp/PackFile.cpp",
 	thirdparty_dir + "src/vpkpp/format/VPK.cpp",
 	thirdparty_dir + "src/vtfpp/HOT.cpp",

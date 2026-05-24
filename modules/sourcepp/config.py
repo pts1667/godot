@@ -8,6 +8,8 @@ def configure(env):
 
 def get_doc_classes():
     return [
+        "SourceAnimPlayer",
+        "SourcePPMDL",
         "SourcePPVPK",
         "SourcePPVTF",
     ]
