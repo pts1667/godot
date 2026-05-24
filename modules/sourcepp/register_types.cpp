@@ -31,6 +31,7 @@
 #include "register_types.h"
 
 #include "core/object/class_db.h"
+#include "sourcepp_vtf.h"
 #include "sourcepp_vpk.h"
 
 void initialize_sourcepp_module(ModuleInitializationLevel p_level) {
@@ -39,6 +40,7 @@ void initialize_sourcepp_module(ModuleInitializationLevel p_level) {
 	}
 
 	GDREGISTER_CLASS(SourcePPVPK);
+	GDREGISTER_CLASS(SourcePPVTF);
 }
 
 void uninitialize_sourcepp_module(ModuleInitializationLevel p_level) {

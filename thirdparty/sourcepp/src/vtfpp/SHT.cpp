@@ -4,6 +4,8 @@
 
 #include <BufferStream.h>
 
+#include <sourcepp/FS.h>
+
 using namespace sourcepp;
 using namespace vtfpp;
 

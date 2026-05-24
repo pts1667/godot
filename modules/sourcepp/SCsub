@@ -27,13 +27,21 @@ thirdparty_sources = [
 	thirdparty_dir + "src/sourcepp/crypto/SHA256.cpp",
 	thirdparty_dir + "src/vpkpp/PackFile.cpp",
 	thirdparty_dir + "src/vpkpp/format/VPK.cpp",
+	thirdparty_dir + "src/vtfpp/HOT.cpp",
+	thirdparty_dir + "src/vtfpp/ImageConversion.cpp",
+	thirdparty_dir + "src/vtfpp/ImageQuantize.cpp",
+	thirdparty_dir + "src/vtfpp/SHT.cpp",
+	thirdparty_dir + "src/vtfpp/VTF.cpp",
 ]
 
 env_sourcepp.Prepend(CPPPATH=[
 	"#thirdparty/bufferstream/include",
 	"#thirdparty/mbedtls/include",
+	"#thirdparty/misc",
+	"#thirdparty/zstd",
 	thirdparty_dir + "include",
 	thirdparty_dir + "ext/half/include",
+	thirdparty_dir + "ext/stb/include",
 ])
 
 env_thirdparty = env_sourcepp.Clone()

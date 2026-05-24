@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPVTF" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Allows reading and writing Valve Texture Format files through the bundled SourcePP library.
+	</brief_description>
+	<description>
+		[SourcePPVTF] exposes a first-cut wrapper over SourcePP's VTF support for scripts.
+		It can open existing VTF files, create new ones from Godot [Image] data, inspect core metadata, decode texture contents to [Image], and bake the VTF back to bytes or disk.
+		Decoded images are currently returned as [code]Image.FORMAT_RGBA8[/code] regardless of the VTF's internal storage format.
+		[codeblock]
+		var image := Image.load_from_file("user://albedo.png")
+		var vtf := SourcePPVTF.new()
+		if vtf.create_from_image(image, 4, true) != OK:
+			return
+
+		vtf.set_format(SourcePPVTF.FORMAT_DXT5)
+		vtf.save("user://albedo.vtf")
+
+		var reopened := SourcePPVTF.new()
+		if reopened.open("user://albedo.vtf") == OK:
+			var decoded := reopened.get_image()
+			decoded.save_png("user://albedo_preview.png")
+		[/codeblock]
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="bake">
+			<return type="PackedByteArray" />
+			<description>
+				Builds the current VTF into a byte array.
+			</description>
+		</method>
+		<method name="close">
+			<return type="void" />
+			<description>
+				Releases the currently loaded VTF.
+			</description>
+		</method>
+		<method name="compute_thumbnail">
+			<return type="void" />
+			<description>
+				Regenerates the embedded thumbnail from the current main image data.
+			</description>
+		</method>
+		<method name="create">
+			<return type="int" enum="Error" />
+			<param index="0" name="width" type="int" />
+			<param index="1" name="height" type="int" />
+			<param index="2" name="format" type="int" default="0" />
+			<param index="3" name="version" type="int" default="4" />
+			<param index="4" name="srgb" type="bool" default="false" />
+			<param index="5" name="generate_mips" type="bool" default="true" />
+			<param index="6" name="generate_thumbnail" type="bool" default="true" />
+			<description>
+				Creates an empty VTF container using the given dimensions and internal VTF [param format].
+			</description>
+		</method>
+		<method name="create_from_image">
+			<return type="int" enum="Error" />
+			<param index="0" name="image" type="Image" />
+			<param index="1" name="version" type="int" default="4" />
+			<param index="2" name="srgb" type="bool" default="false" />
+			<param index="3" name="generate_mips" type="bool" default="true" />
+			<param index="4" name="generate_thumbnail" type="bool" default="true" />
+			<description>
+				Creates a new VTF from a Godot [Image]. Unsupported or compressed Godot formats are converted to a compatible uncompressed format first.
+			</description>
+		</method>
+		<method name="get_depth">
+			<return type="int" />
+			<param index="0" name="mip" type="int" default="0" />
+			<description>
+				Returns the depth of the given mip level.
+			</description>
+		</method>
+		<method name="get_face_count">
+			<return type="int" />
+			<description>
+				Returns the face count. Cubemaps typically report 6.
+			</description>
+		</method>
+		<method name="get_frame_count">
+			<return type="int" />
+			<description>
+				Returns the number of animation frames stored in the VTF.
+			</description>
+		</method>
+		<method name="get_height">
+			<return type="int" />
+			<param index="0" name="mip" type="int" default="0" />
+			<description>
+				Returns the height of the given mip level.
+			</description>
+		</method>
+		<method name="get_image">
+			<return type="Image" />
+			<param index="0" name="mip" type="int" default="0" />
+			<param index="1" name="frame" type="int" default="0" />
+			<param index="2" name="face" type="int" default="0" />
+			<param index="3" name="slice" type="int" default="0" />
+			<description>
+				Decodes one image slice and returns it as a Godot [Image] in [code]Image.FORMAT_RGBA8[/code].
+			</description>
+		</method>
+		<method name="get_mip_count">
+			<return type="int" />
+			<description>
+				Returns the mip level count.
+			</description>
+		</method>
+		<method name="get_path">
+			<return type="String" />
+			<description>
+				Returns the last path used to open or save this VTF, or an empty string if it only exists in memory.
+			</description>
+		</method>
+		<method name="get_thumbnail">
+			<return type="Image" />
+			<description>
+				Returns the embedded thumbnail as a Godot [Image] in [code]Image.FORMAT_RGBA8[/code].
+			</description>
+		</method>
+		<method name="get_width">
+			<return type="int" />
+			<param index="0" name="mip" type="int" default="0" />
+			<description>
+				Returns the width of the given mip level.
+			</description>
+		</method>
+		<method name="has_image">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the VTF currently has main image data.
+			</description>
+		</method>
+		<method name="has_thumbnail_data">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the VTF currently has thumbnail data.
+			</description>
+		</method>
+		<method name="is_open">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if a VTF is currently loaded.
+			</description>
+		</method>
+		<method name="open">
+			<return type="int" enum="Error" />
+			<param index="0" name="path" type="String" />
+			<param index="1" name="parse_header_only" type="bool" default="false" />
+			<description>
+				Opens the VTF at [param path]. If [param parse_header_only] is [code]true[/code], image payload data may be left unopened until needed.
+			</description>
+		</method>
+		<method name="open_from_buffer">
+			<return type="int" enum="Error" />
+			<param index="0" name="data" type="PackedByteArray" />
+			<param index="1" name="parse_header_only" type="bool" default="false" />
+			<description>
+				Opens a VTF from in-memory bytes.
+			</description>
+		</method>
+		<method name="remove_thumbnail">
+			<return type="void" />
+			<description>
+				Removes the embedded thumbnail.
+			</description>
+		</method>
+		<method name="save">
+			<return type="bool" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Bakes the current VTF to [param path].
+			</description>
+		</method>
+		<method name="set_image">
+			<return type="bool" />
+			<param index="0" name="image" type="Image" />
+			<param index="1" name="mip" type="int" default="0" />
+			<param index="2" name="frame" type="int" default="0" />
+			<param index="3" name="face" type="int" default="0" />
+			<param index="4" name="slice" type="int" default="0" />
+			<description>
+				Replaces one image slice using the provided Godot [Image].
+			</description>
+		</method>
+		<method name="set_thumbnail">
+			<return type="bool" />
+			<param index="0" name="image" type="Image" />
+			<description>
+				Replaces the embedded thumbnail from a Godot [Image].
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="flags" type="int" setter="set_flags" getter="get_flags" default="0">
+			The raw VTF flags bitmask.
+		</member>
+		<member name="format" type="int" setter="set_format" getter="get_format" default="0">
+			The internal [code]ImageFormat[/code] used by the VTF payload.
+		</member>
+		<member name="platform" type="int" setter="set_platform" getter="get_platform" default="7">
+			The target VTF platform.
+		</member>
+		<member name="srgb" type="bool" setter="set_srgb" getter="is_srgb" default="false">
+			Whether the VTF is marked as sRGB.
+		</member>
+		<member name="version" type="int" setter="set_version" getter="get_version" default="0">
+			The VTF version field used for baking.
+		</member>
+	</members>
+</class>

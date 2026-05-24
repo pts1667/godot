@@ -21,10 +21,11 @@
 #endif
 
 #include <BufferStream.h>
-#include <miniz.h>
 #include <zstd.h>
+#include <zlib.h>
 
-#include <sourcepp/compression/LZMA.h>
+#include <sourcepp/FS.h>
+#include <sourcepp/String.h>
 #include <vtfpp/ImageConversion.h>
 #include <vtfpp/ImagePixel.h>
 #include <vtfpp/ImageQuantize.h>
@@ -34,20 +35,22 @@ using namespace vtfpp;
 
 namespace {
 
+constexpr uint32_t VALVE_LZMA_SIGNATURE = sourcepp::parser::binary::makeFourCC("LZMA");
+
 [[nodiscard]] std::vector<std::byte> compressData(std::span<const std::byte> data, int16_t level, CompressionMethod method) {
 	switch (method) {
 		using enum CompressionMethod;
 		case DEFLATE: {
-			mz_ulong compressedSize = mz_compressBound(data.size());
+			uLongf compressedSize = compressBound(data.size());
 			std::vector<std::byte> out(compressedSize);
 
-			int status = MZ_OK;
-			while ((status = mz_compress2(reinterpret_cast<unsigned char*>(out.data()), &compressedSize, reinterpret_cast<const unsigned char*>(data.data()), data.size(), level)) == MZ_BUF_ERROR) {
+			int status = Z_OK;
+			while ((status = compress2(reinterpret_cast<Bytef*>(out.data()), &compressedSize, reinterpret_cast<const Bytef*>(data.data()), data.size(), level < 0 ? Z_DEFAULT_COMPRESSION : level)) == Z_BUF_ERROR) {
 				compressedSize *= 2;
 				out.resize(compressedSize);
 			}
 
-			if (status != MZ_OK) {
+			if (status != Z_OK) {
 				return {};
 			}
 			out.resize(compressedSize);
@@ -70,9 +73,6 @@ namespace {
 			return out;
 		}
 		case CONSOLE_LZMA: {
-			if (const auto out = compression::compressValveLZMA(data, level)) {
-				return *out;
-			}
 			return {};
 		}
 	}
@@ -602,11 +602,11 @@ VTF::VTF(std::vector<std::byte>&& vtfData, bool parseHeaderOnly, bool hdr)
 										uint32_t oldLength = auxResource->getDataAsAuxCompressionLength(i, this->mipCount, j, this->frameCount, k, faceCount);
 										if (uint32_t newOffset, newLength; ImageFormatDetails::getDataPosition(newOffset, newLength, this->format, i, this->mipCount, j, this->frameCount, k, faceCount, this->width, this->height, 0, this->getDepth())) {
 											// Keep in mind that slices are compressed together
-											mz_ulong decompressedImageDataSize = newLength * this->depth;
+											uLongf decompressedImageDataSize = newLength * this->depth;
 											switch (auxResource->getDataAsAuxCompressionMethod()) {
 												using enum CompressionMethod;
 												case DEFLATE:
-													if (mz_uncompress(reinterpret_cast<unsigned char*>(decompressedImageData.data() + newOffset), &decompressedImageDataSize, reinterpret_cast<const unsigned char*>(imageResource->data.data() + oldOffset), oldLength) != MZ_OK) {
+													if (uncompress(reinterpret_cast<Bytef*>(decompressedImageData.data() + newOffset), &decompressedImageDataSize, reinterpret_cast<const Bytef*>(imageResource->data.data() + oldOffset), oldLength) != Z_OK) {
 														this->opened = false;
 														return;
 													}
@@ -818,15 +818,9 @@ VTF::VTF(std::vector<std::byte>&& vtfData, bool parseHeaderOnly, bool hdr)
 			// The resources vector isn't modified by setResourceInternal when we're not adding a new one, so this is fine
 			for (const auto& resource : this->resources) {
 				// Decompress LZMA resources
-				if (BufferStreamReadOnly rsrcStream{resource.data}; rsrcStream.read<uint32_t>() == compression::VALVE_LZMA_SIGNATURE) {
-					if (auto decompressedData = compression::decompressValveLZMA(resource.data)) {
-						this->setResourceInternal(resource.type, *decompressedData);
-
-						if (resource.type == Resource::TYPE_IMAGE_DATA) {
-							// Do this here because compressionLength in header can be garbage on PS3 orange box
-							this->compressionMethod = CompressionMethod::CONSOLE_LZMA;
-						}
-					}
+				if (BufferStreamReadOnly rsrcStream{resource.data}; rsrcStream.read<uint32_t>() == VALVE_LZMA_SIGNATURE) {
+					this->opened = false;
+					return;
 				}
 
 				if (resource.type == Resource::TYPE_THUMBNAIL_DATA) {
@@ -855,7 +849,10 @@ VTF::VTF(std::span<const std::byte> vtfData, bool parseHeaderOnly, bool hdr)
 		: VTF(std::vector<std::byte>{vtfData.begin(), vtfData.end()}, parseHeaderOnly, hdr) {}
 
 VTF::VTF(const std::filesystem::path& vtfPath, bool parseHeaderOnly)
-		: VTF(fs::readFileBuffer(vtfPath), parseHeaderOnly, [](std::string path) {
+		: VTF([&vtfPath]() {
+			auto data = fs::readFileBuffer(vtfPath);
+			return data;
+		}(), parseHeaderOnly, [](std::string path) {
 			sourcepp::string::toLower(path);
 			return path.ends_with(".hdr.vtf") || path.ends_with(".hdr.360.vtf") || path.ends_with(".hdr.ps3.vtf");
 		}(vtfPath.filename().string())) {}
@@ -2083,7 +2080,7 @@ bool VTF::setImage(const std::filesystem::path& imagePath, ImageConversion::Resi
 	bool allSuccess = true;
 	const auto frameSize = ImageFormatDetails::getDataLength(inputFormat, inputWidth, inputHeight);
 	for (int currentFrame = 0; currentFrame < inputFrameCount; currentFrame++) {
-		std::span currentFrameData{imageData_.data() + currentFrame * frameSize, imageData_.data() + currentFrame * frameSize + frameSize};
+		std::span<const std::byte> currentFrameData{imageData_.data() + currentFrame * frameSize, frameSize};
 		if (requestedResizeWidth != inputWidth || requestedResizeHeight != inputHeight) {
 			const auto currentFrameResized = ImageConversion::resizeImageData(currentFrameData, inputFormat, inputWidth, requestedResizeWidth, inputHeight, requestedResizeHeight, !ImageFormatDetails::large(inputFormat), this->getFlagsExtra() & FLAG_EXTRA_USING_PREMULTIPLIED_ALPHA_RESIZE, filter);
 			if (!this->setImage(currentFrameResized, inputFormat, requestedResizeWidth, requestedResizeHeight, filter, mip, frame + currentFrame, face, slice, quality)) {
@@ -2169,7 +2166,7 @@ bool VTF::setThumbnail(const std::filesystem::path& imagePath, float quality) {
 
 	// Multiple frames (GIF) - we will just use the first one
 	const auto frameSize = ImageFormatDetails::getDataLength(inputFormat, inputWidth, inputHeight);
-	this->setThumbnail({imageData_.data(), frameSize}, inputFormat, inputWidth, inputHeight, quality);
+	this->setThumbnail(std::span<const std::byte>{imageData_.data(), frameSize}, inputFormat, inputWidth, inputHeight, quality);
 	return true;
 }
 
@@ -2738,18 +2735,7 @@ std::vector<std::byte> VTF::bake() const {
 					// LZMA compression has not been observed on the PS3 copy of The Orange Box
 					// todo(vtfpp): check cubemaps
 					if (this->platform != PLATFORM_PS3_ORANGEBOX && this->compressionMethod == CompressionMethod::CONSOLE_LZMA) {
-						auto fixedCompressionLevel = this->compressionLevel;
-						if (this->compressionLevel == 0) {
-							// Compression level defaults to 0, so it works differently on console.
-							// Rather than not compress on 0, 0 will be replaced with the default
-							// compression level (6) if the compression method is LZMA.
-							fixedCompressionLevel = 6;
-						}
-						if (auto compressedData = compression::compressValveLZMA(imageResourceData, fixedCompressionLevel)) {
-							imageResourceData = std::move(*compressedData);
-							const auto curPos = writer.tell();
-							writer.seek_u(compressionPos).write<uint32_t>(imageResourceData.size()).seek_u(curPos);
-						}
+						return {};
 					}
 
 					resource.data = imageResourceData;
