@@ -26,11 +26,14 @@ struct StudioModel;
 }
 
 class Skeleton3D;
+class SourcePPResolver;
 
 class SourcePPMDL : public RefCounted {
 	GDCLASS(SourcePPMDL, RefCounted);
 
 	std::unique_ptr<mdlpp::StudioModel> model;
+	Ref<SourcePPResolver> resolver;
+	String resolver_game_id;
 	String mdl_path;
 	String vtx_path;
 	String vvd_path;
@@ -40,7 +43,8 @@ class SourcePPMDL : public RefCounted {
 	static std::string _to_utf8(const String &p_string);
 	static String _from_utf8(const std::string &p_string);
 	static std::vector<std::byte> _to_byte_vector(const Vector<uint8_t> &p_data);
-	static String _derive_companion_path(const String &p_model_path, const PackedStringArray &p_candidates);
+	String _resolve_companion_path(const String &p_model_path, const PackedStringArray &p_candidates) const;
+	Vector<uint8_t> _read_file_bytes(const String &p_path, Error *r_error) const;
 
 	Error _open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<uint8_t> &p_vtx_data, const Vector<uint8_t> &p_vvd_data, const Vector<uint8_t> &p_anim_block_data = Vector<uint8_t>());
 	Error _get_baked_model(int p_lod, mdlpp::BakedModel &r_baked_model) const;
@@ -51,6 +55,11 @@ class SourcePPMDL : public RefCounted {
 public:
 	SourcePPMDL();
 	~SourcePPMDL() override;
+
+	void set_resolver(const Ref<SourcePPResolver> &p_resolver);
+	Ref<SourcePPResolver> get_resolver() const;
+	void set_resolver_game_id(const String &p_game_id);
+	String get_resolver_game_id() const;
 
 	Error open(const String &p_mdl_path, const String &p_vtx_path = String(), const String &p_vvd_path = String());
 	Error open_from_buffer(const PackedByteArray &p_mdl_data, const PackedByteArray &p_vtx_data, const PackedByteArray &p_vvd_data, const PackedByteArray &p_anim_block_data = PackedByteArray());

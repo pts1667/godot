@@ -251,7 +251,7 @@
 			<param index="1" name="vtx_path" type="String" default="&quot;&quot;" />
 			<param index="2" name="vvd_path" type="String" default="&quot;&quot;" />
 			<description>
-				Opens a model from disk. If [param vtx_path] or [param vvd_path] are empty, common companion filenames next to [param mdl_path] are tried automatically.
+				Opens a model from disk. If [member resolver] is assigned, [param mdl_path] and any omitted companion paths can also be resolved from registered VPK content. If [param vtx_path] or [param vvd_path] are empty, common companion filenames next to [param mdl_path] are tried automatically.
 			</description>
 		</method>
 		<method name="open_from_buffer">
@@ -289,6 +289,12 @@
 		</member>
 		<member name="name" type="String" getter="get_name" default="&quot;&quot;">
 			The parsed MDL header name.
+		</member>
+		<member name="resolver" type="SourcePPResolver" setter="set_resolver" getter="get_resolver" default="null">
+			Optional resolver used to read the MDL, its VTX and VVD companions, and external animation blocks from registered Source game VPKs.
+		</member>
+		<member name="resolver_game_id" type="String" setter="set_resolver_game_id" getter="get_resolver_game_id" default="&quot;&quot;">
+			Optional registered game ID used when querying [member resolver]. If empty, the resolver iterates over registered games in registration order for each requested entry.
 		</member>
 		<member name="sequence_descriptor_count" type="int" getter="get_sequence_descriptor_count" default="0">
 			The number of parsed local sequence descriptors.

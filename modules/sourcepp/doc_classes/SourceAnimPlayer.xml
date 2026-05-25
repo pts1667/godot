@@ -114,7 +114,7 @@
 			<param index="1" name="vtx_path" type="String" default="&quot;&quot;" />
 			<param index="2" name="vvd_path" type="String" default="&quot;&quot;" />
 			<description>
-				Opens an MDL from disk. If [param vtx_path] or [param vvd_path] are omitted, common companion filenames are resolved next to the MDL automatically.
+				Opens an MDL from disk. If [member resolver] is assigned, [param mdl_path] and any omitted companion paths can also be resolved from registered VPK content. If [param vtx_path] or [param vvd_path] are omitted, common companion filenames are resolved next to the MDL automatically.
 			</description>
 		</method>
 		<method name="open_from_buffer">
@@ -194,6 +194,12 @@
 		</member>
 		<member name="ik_enabled" type="bool" setter="set_ik_enabled" getter="is_ik_enabled" default="true">
 			If [code]true[/code], parsed Source IK chains and sequence IK locks are applied after the sampled animation pose is written to the target skeleton.
+		</member>
+		<member name="resolver" type="SourcePPResolver" setter="set_resolver" getter="get_resolver" default="null">
+			Optional resolver used to read the MDL, its companions, and external animation blocks from registered Source game VPKs.
+		</member>
+		<member name="resolver_game_id" type="String" setter="set_resolver_game_id" getter="get_resolver_game_id" default="&quot;&quot;">
+			Optional registered game ID used when querying [member resolver]. If empty, the resolver iterates over registered games in registration order for each requested entry.
 		</member>
 		<member name="sequence_descriptor" type="int" setter="set_sequence_descriptor" getter="get_sequence_descriptor" default="-1">
 			The active sequence descriptor index.

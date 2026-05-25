@@ -33,6 +33,8 @@
 #include "core/object/class_db.h"
 #include "source_anim_player.h"
 #include "sourcepp_mdl.h"
+#include "sourcepp_resolver.h"
+#include "sourcepp_vmt.h"
 #include "sourcepp_vtf.h"
 #include "sourcepp_vpk.h"
 
@@ -43,6 +45,8 @@ void initialize_sourcepp_module(ModuleInitializationLevel p_level) {
 
 	GDREGISTER_CLASS(SourceAnimPlayer);
 	GDREGISTER_CLASS(SourcePPMDL);
+	GDREGISTER_CLASS(SourcePPResolver);
+	GDREGISTER_CLASS(SourcePPVMT);
 	GDREGISTER_CLASS(SourcePPVPK);
 	GDREGISTER_CLASS(SourcePPVTF);
 }

@@ -3,7 +3,7 @@
 #include <optional>
 
 #include <steampp/steampp.h>
-#include <vpkpp/vpkpp.h>
+#include <vpkpp/PackFile.h>
 
 namespace fspp {
 

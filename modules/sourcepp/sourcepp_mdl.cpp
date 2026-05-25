@@ -8,6 +8,8 @@
 
 #include "sourcepp_mdl.h"
 
+#include "sourcepp_resolver.h"
+
 #include "core/error/error_macros.h"
 #include "core/math/transform_3d.h"
 #include "core/object/class_db.h"
@@ -32,7 +34,26 @@ Transform3D _to_bone_rest(const mdlpp::MDL::Bone &p_bone) {
 	return Transform3D(Basis(_to_quaternion(p_bone.rotationQuat)), _to_vector3(p_bone.position));
 }
 
-String _resolve_anim_block_path(const String &p_model_path, const mdlpp::MDL::MDL &p_mdl) {
+bool _path_exists_with_resolver(const String &p_path, const Ref<SourcePPResolver> &p_resolver, const String &p_game_id) {
+	if (FileAccess::exists(p_path)) {
+		return true;
+	}
+	if (!p_resolver.is_valid()) {
+		return false;
+	}
+	return p_game_id.is_empty() ? p_resolver->has_file(p_path) : p_resolver->has_file(p_path, p_game_id);
+}
+
+Vector<uint8_t> _packed_to_vector(const PackedByteArray &p_bytes) {
+	Vector<uint8_t> out;
+	out.resize(p_bytes.size());
+	if (!p_bytes.is_empty()) {
+		std::memcpy(out.ptrw(), p_bytes.ptr(), static_cast<size_t>(p_bytes.size()));
+	}
+	return out;
+}
+
+String _resolve_anim_block_path(const String &p_model_path, const mdlpp::MDL::MDL &p_mdl, const Ref<SourcePPResolver> &p_resolver, const String &p_game_id) {
 	if (p_mdl.animBlocks.size() <= 1 || p_mdl.animBlockName.empty()) {
 		return String();
 	}
@@ -41,23 +62,23 @@ String _resolve_anim_block_path(const String &p_model_path, const mdlpp::MDL::MD
 	if (anim_block_name.is_empty()) {
 		return String();
 	}
-	if (FileAccess::exists(anim_block_name)) {
+	if (_path_exists_with_resolver(anim_block_name, p_resolver, p_game_id)) {
 		return anim_block_name;
 	}
 
 	const String model_dir = p_model_path.get_base_dir();
 	const String local_candidate = model_dir.path_join(anim_block_name.get_file());
-	if (FileAccess::exists(local_candidate)) {
+	if (_path_exists_with_resolver(local_candidate, p_resolver, p_game_id)) {
 		return local_candidate;
 	}
 
 	const String relative_candidate = model_dir.path_join(anim_block_name);
-	if (FileAccess::exists(relative_candidate)) {
+	if (_path_exists_with_resolver(relative_candidate, p_resolver, p_game_id)) {
 		return relative_candidate;
 	}
 
 	const String fallback_candidate = p_model_path.get_basename() + ".ani";
-	if (FileAccess::exists(fallback_candidate)) {
+	if (_path_exists_with_resolver(fallback_candidate, p_resolver, p_game_id)) {
 		return fallback_candidate;
 	}
 
@@ -159,15 +180,42 @@ std::vector<std::byte> SourcePPMDL::_to_byte_vector(const Vector<uint8_t> &p_dat
 	return out;
 }
 
-String SourcePPMDL::_derive_companion_path(const String &p_model_path, const PackedStringArray &p_candidates) {
+String SourcePPMDL::_resolve_companion_path(const String &p_model_path, const PackedStringArray &p_candidates) const {
 	const String base = p_model_path.get_basename();
 	for (const String &suffix : p_candidates) {
 		const String candidate = base + suffix;
-		if (FileAccess::exists(candidate)) {
+		if (_path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
 			return candidate;
 		}
 	}
 	return String();
+}
+
+Vector<uint8_t> SourcePPMDL::_read_file_bytes(const String &p_path, Error *r_error) const {
+	Error error = OK;
+	Vector<uint8_t> bytes = FileAccess::get_file_as_bytes(p_path, &error);
+	if (error == OK) {
+		if (r_error != nullptr) {
+			*r_error = OK;
+		}
+		return bytes;
+	}
+
+	if (resolver.is_valid()) {
+		const PackedByteArray resolved = resolver_game_id.is_empty() ? resolver->read_file(p_path) : resolver->read_file(p_path, resolver_game_id);
+		const bool has_resolved_file = resolver_game_id.is_empty() ? resolver->has_file(p_path) : resolver->has_file(p_path, resolver_game_id);
+		if (!resolved.is_empty() || has_resolved_file) {
+			if (r_error != nullptr) {
+				*r_error = OK;
+			}
+			return _packed_to_vector(resolved);
+		}
+	}
+
+	if (r_error != nullptr) {
+		*r_error = error == OK ? ERR_FILE_NOT_FOUND : error;
+	}
+	return Vector<uint8_t>();
 }
 
 Error SourcePPMDL::_open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<uint8_t> &p_vtx_data, const Vector<uint8_t> &p_vvd_data, const Vector<uint8_t> &p_anim_block_data) {
@@ -203,21 +251,37 @@ const mdlpp::StudioModel *SourcePPMDL::get_model() const {
 	return model.get();
 }
 
+void SourcePPMDL::set_resolver(const Ref<SourcePPResolver> &p_resolver) {
+	resolver = p_resolver;
+}
+
+Ref<SourcePPResolver> SourcePPMDL::get_resolver() const {
+	return resolver;
+}
+
+void SourcePPMDL::set_resolver_game_id(const String &p_game_id) {
+	resolver_game_id = p_game_id.strip_edges().to_lower();
+}
+
+String SourcePPMDL::get_resolver_game_id() const {
+	return resolver_game_id;
+}
+
 Error SourcePPMDL::open(const String &p_mdl_path, const String &p_vtx_path, const String &p_vvd_path) {
 	close();
 	ERR_FAIL_COND_V_MSG(p_mdl_path.is_empty(), ERR_INVALID_PARAMETER, "MDL path must not be empty.");
 
-	const String resolved_vtx_path = p_vtx_path.is_empty() ? _derive_companion_path(p_mdl_path, PackedStringArray{".dx90.vtx", ".vtx", ".dx80.vtx", ".sw.vtx", ".dx11.vtx"}) : p_vtx_path;
-	const String resolved_vvd_path = p_vvd_path.is_empty() ? _derive_companion_path(p_mdl_path, PackedStringArray{".vvd"}) : p_vvd_path;
+	const String resolved_vtx_path = p_vtx_path.is_empty() ? _resolve_companion_path(p_mdl_path, PackedStringArray{".dx90.vtx", ".vtx", ".dx80.vtx", ".sw.vtx", ".dx11.vtx"}) : p_vtx_path;
+	const String resolved_vvd_path = p_vvd_path.is_empty() ? _resolve_companion_path(p_mdl_path, PackedStringArray{".vvd"}) : p_vvd_path;
 	ERR_FAIL_COND_V_MSG(resolved_vtx_path.is_empty(), ERR_FILE_NOT_FOUND, "Could not resolve a companion VTX file for the requested MDL.");
 	ERR_FAIL_COND_V_MSG(resolved_vvd_path.is_empty(), ERR_FILE_NOT_FOUND, "Could not resolve a companion VVD file for the requested MDL.");
 
 	Error mdl_error = OK;
 	Error vtx_error = OK;
 	Error vvd_error = OK;
-	const Vector<uint8_t> mdl_data = FileAccess::get_file_as_bytes(p_mdl_path, &mdl_error);
-	const Vector<uint8_t> vtx_data = FileAccess::get_file_as_bytes(resolved_vtx_path, &vtx_error);
-	const Vector<uint8_t> vvd_data = FileAccess::get_file_as_bytes(resolved_vvd_path, &vvd_error);
+	const Vector<uint8_t> mdl_data = _read_file_bytes(p_mdl_path, &mdl_error);
+	const Vector<uint8_t> vtx_data = _read_file_bytes(resolved_vtx_path, &vtx_error);
+	const Vector<uint8_t> vvd_data = _read_file_bytes(resolved_vvd_path, &vvd_error);
 	ERR_FAIL_COND_V_MSG(mdl_error != OK, mdl_error, "Failed to load the MDL file.");
 	ERR_FAIL_COND_V_MSG(vtx_error != OK, vtx_error, "Failed to load the VTX companion file.");
 	ERR_FAIL_COND_V_MSG(vvd_error != OK, vvd_error, "Failed to load the VVD companion file.");
@@ -228,10 +292,10 @@ Error SourcePPMDL::open(const String &p_mdl_path, const String &p_vtx_path, cons
 		return open_error;
 	}
 
-	const String anim_block_path = _resolve_anim_block_path(p_mdl_path, model->mdl);
+	const String anim_block_path = _resolve_anim_block_path(p_mdl_path, model->mdl, resolver, resolver_game_id);
 	if (!anim_block_path.is_empty()) {
 		Error anim_block_error = OK;
-		const Vector<uint8_t> anim_block_data = FileAccess::get_file_as_bytes(anim_block_path, &anim_block_error);
+		const Vector<uint8_t> anim_block_data = _read_file_bytes(anim_block_path, &anim_block_error);
 		if (anim_block_error != OK) {
 			close();
 			return anim_block_error;
@@ -847,6 +911,10 @@ Skeleton3D *SourcePPMDL::create_skeleton() const {
 }
 
 void SourcePPMDL::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_resolver", "resolver"), &SourcePPMDL::set_resolver);
+	ClassDB::bind_method(D_METHOD("get_resolver"), &SourcePPMDL::get_resolver);
+	ClassDB::bind_method(D_METHOD("set_resolver_game_id", "game_id"), &SourcePPMDL::set_resolver_game_id);
+	ClassDB::bind_method(D_METHOD("get_resolver_game_id"), &SourcePPMDL::get_resolver_game_id);
 	ClassDB::bind_method(D_METHOD("open", "mdl_path", "vtx_path", "vvd_path"), &SourcePPMDL::open, DEFVAL(String()), DEFVAL(String()));
 	ClassDB::bind_method(D_METHOD("open_from_buffer", "mdl_data", "vtx_data", "vvd_data", "anim_block_data"), &SourcePPMDL::open_from_buffer, DEFVAL(PackedByteArray()));
 	ClassDB::bind_method(D_METHOD("close"), &SourcePPMDL::close);
@@ -888,6 +956,8 @@ void SourcePPMDL::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("create_skin"), &SourcePPMDL::create_skin);
 	ClassDB::bind_method(D_METHOD("create_skeleton"), &SourcePPMDL::create_skeleton);
 
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "resolver", PROPERTY_HINT_RESOURCE_TYPE, "SourcePPResolver"), "set_resolver", "get_resolver");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING, "resolver_game_id"), "set_resolver_game_id", "get_resolver_game_id");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "attachment_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_attachment_count");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "animation_descriptor_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_animation_descriptor_count");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "bone_controller_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_bone_controller_count");

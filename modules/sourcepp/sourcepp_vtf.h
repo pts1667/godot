@@ -23,10 +23,14 @@ enum class ImageFormat : int32_t;
 class VTF;
 }
 
+class SourcePPResolver;
+
 class SourcePPVTF : public RefCounted {
 	GDCLASS(SourcePPVTF, RefCounted);
 
 	std::unique_ptr<vtfpp::VTF> texture;
+	Ref<SourcePPResolver> resolver;
+	String resolver_game_id;
 	String source_path;
 
 	static void _bind_methods();
@@ -37,6 +41,7 @@ class SourcePPVTF : public RefCounted {
 	static std::vector<std::byte> _to_byte_vector(const Vector<uint8_t> &p_data);
 	static Ref<Image> _to_rgba8_image(std::span<const std::byte> p_data, int p_width, int p_height);
 	static Error _normalize_image(const Ref<Image> &p_image, Ref<Image> &r_image, vtfpp::ImageFormat &r_format);
+	PackedByteArray _read_file_bytes(const String &p_path, Error *r_error) const;
 
 	vtfpp::VTF *get_texture();
 	const vtfpp::VTF *get_texture() const;
@@ -84,6 +89,11 @@ public:
 
 	SourcePPVTF();
 	~SourcePPVTF() override;
+
+	void set_resolver(const Ref<SourcePPResolver> &p_resolver);
+	Ref<SourcePPResolver> get_resolver() const;
+	void set_resolver_game_id(const String &p_game_id);
+	String get_resolver_game_id() const;
 
 	Error open(const String &p_path, bool p_parse_header_only = false);
 	Error open_from_buffer(const PackedByteArray &p_data, bool p_parse_header_only = false);

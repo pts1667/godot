@@ -9,6 +9,8 @@
 #include <variant>
 #include <vector>
 
+#include <sourcepp/Math.h>
+
 namespace kvpp {
 
 enum class KV1BinaryValueType : uint8_t {

@@ -2,13 +2,11 @@
 
 #include <filesystem>
 
-#include <bsppp/bsppp.h>
 #include <kvpp/kvpp.h>
 #include <sourcepp/FS.h>
 #include <sourcepp/String.h>
-#include <vpkpp/vpkpp.h>
+#include <vpkpp/format/VPK.h>
 
-using namespace bsppp;
 using namespace fspp;
 using namespace kvpp;
 using namespace sourcepp;
@@ -89,7 +87,7 @@ FileSystem::FileSystem(std::string_view gamePath, const FileSystemOptions& optio
 				if (!this->searchPathVPKs.contains(search)) {
 					this->searchPathVPKs[search] = std::vector<std::unique_ptr<PackFile>>{};
 				}
-				auto packFile = PackFile::open(fullPath);
+				auto packFile = VPK::open(fullPath);
 				if (packFile) {
 					this->searchPathVPKs[search].push_back(std::move(packFile));
 				}

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPResolver" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Resolves Source Engine assets from registered local installs and Steam game VPKs.
+	</brief_description>
+	<description>
+		[SourcePPResolver] wraps the bundled SourcePP file-system layer and exposes a higher-level Godot API for Source game content lookup.
+		It can register local Source installs or Steam apps, build per-search-path maps of VPK-backed entries, return the owning VPK path for a virtual asset path, and read files such as [code]models/props/crate.mdl[/code] directly from registered content.
+		Classes such as [SourcePPMDL] and [SourceAnimPlayer] can use a resolver instance to fetch companion assets from VPKs instead of requiring loose files on disk.
+		[codeblock]
+		var resolver := SourcePPResolver.new()
+		resolver.register_steam_game(220, "hl2")
+
+		var mdl := SourcePPMDL.new()
+		mdl.resolver = resolver
+		mdl.open("models/props_c17/oildrum001.mdl")
+		[/codeblock]
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="clear">
+			<return type="void" />
+			<description>
+				Unregisters all currently registered games and clears all cached entry maps.
+			</description>
+		</method>
+		<method name="get_entry_map">
+			<return type="Dictionary" />
+			<param index="0" name="search_path" type="String" default="&quot;GAME&quot;" />
+			<description>
+				Returns a nested dictionary of [code]game_id -&gt; { entry_path: vpk_path }[/code] for the requested Source search path.
+			</description>
+		</method>
+		<method name="get_file_vpk_path">
+			<return type="String" />
+			<param index="0" name="file_path" type="String" />
+			<param index="1" name="game_id" type="String" default="&quot;&quot;" />
+			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
+			<description>
+				Returns the VPK path that contains [param file_path], or an empty string if no registered game contains it.
+				If [param game_id] is empty, registered games are searched in registration order.
+			</description>
+		</method>
+		<method name="get_registered_games">
+			<return type="PackedStringArray" />
+			<description>
+				Returns registered game IDs in the order they will be searched when no explicit game ID is provided.
+			</description>
+		</method>
+		<method name="has_file">
+			<return type="bool" />
+			<param index="0" name="file_path" type="String" />
+			<param index="1" name="game_id" type="String" default="&quot;&quot;" />
+			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
+			<description>
+				Returns [code]true[/code] if the requested virtual file exists in one of the registered search roots.
+				If [param game_id] is empty, registered games are searched in registration order.
+			</description>
+		</method>
+		<method name="read_file">
+			<return type="PackedByteArray" />
+			<param index="0" name="file_path" type="String" />
+			<param index="1" name="game_id" type="String" default="&quot;&quot;" />
+			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
+			<description>
+				Reads the requested virtual file from a registered Source install or VPK and returns its bytes. If the file is not found, an empty array is returned.
+				If [param game_id] is empty, registered games are searched in registration order.
+			</description>
+		</method>
+		<method name="register_local_game">
+			<return type="int" enum="Error" />
+			<param index="0" name="game_path" type="String" />
+			<description>
+				Registers a local Source game folder containing [code]gameinfo.txt[/code]. The stored game ID is derived from the folder name.
+			</description>
+		</method>
+		<method name="register_steam_game">
+			<return type="int" enum="Error" />
+			<param index="0" name="app_id" type="int" />
+			<param index="1" name="game_id" type="String" />
+			<description>
+				Registers a Steam Source game using the provided Steam app ID and the game directory name that contains [code]gameinfo.txt[/code], such as [code]portal2[/code] or [code]hl2[/code].
+			</description>
+		</method>
+		<method name="unregister_game">
+			<return type="bool" />
+			<param index="0" name="game_id" type="String" />
+			<description>
+				Unregisters the requested game ID. Returns [code]true[/code] if a registration was removed.
+			</description>
+		</method>
+	</methods>
+	<members>
+	</members>
+</class>

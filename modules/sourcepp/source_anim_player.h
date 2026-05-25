@@ -26,6 +26,7 @@ struct StudioModel;
 }
 
 class Skeleton3D;
+class SourcePPResolver;
 
 class SourceAnimPlayer : public Node {
 	GDCLASS(SourceAnimPlayer, Node);
@@ -62,6 +63,8 @@ class SourceAnimPlayer : public Node {
 	mutable std::unordered_map<int, std::unique_ptr<mdlpp::SampledAnimation>> sampled_animation_cache;
 	Vector<IKRuntimeChain> ik_runtime_chains;
 
+	Ref<SourcePPResolver> resolver;
+	String resolver_game_id;
 	String mdl_path;
 	String vtx_path;
 	String vvd_path;
@@ -82,7 +85,8 @@ class SourceAnimPlayer : public Node {
 
 	static std::string _to_utf8(const String &p_string);
 	static std::vector<std::byte> _to_byte_vector(const Vector<uint8_t> &p_data);
-	static String _derive_companion_path(const String &p_model_path, const PackedStringArray &p_candidates);
+	String _resolve_companion_path(const String &p_model_path, const PackedStringArray &p_candidates) const;
+	Vector<uint8_t> _read_file_bytes(const String &p_path, Error *r_error) const;
 
 	Error _open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<uint8_t> &p_vtx_data, const Vector<uint8_t> &p_vvd_data, const Vector<uint8_t> &p_anim_block_data = Vector<uint8_t>());
 	void _clear_ik_runtime();
@@ -137,6 +141,11 @@ class SourceAnimPlayer : public Node {
 public:
 	SourceAnimPlayer();
 	~SourceAnimPlayer() override;
+
+	void set_resolver(const Ref<SourcePPResolver> &p_resolver);
+	Ref<SourcePPResolver> get_resolver() const;
+	void set_resolver_game_id(const String &p_game_id);
+	String get_resolver_game_id() const;
 
 	Error open(const String &p_mdl_path, const String &p_vtx_path = String(), const String &p_vvd_path = String());
 	Error open_from_buffer(const PackedByteArray &p_mdl_data, const PackedByteArray &p_vtx_data, const PackedByteArray &p_vvd_data, const PackedByteArray &p_anim_block_data = PackedByteArray());

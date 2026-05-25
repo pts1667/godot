@@ -8,7 +8,10 @@
 
 #include "sourcepp_vtf.h"
 
+#include "sourcepp_resolver.h"
+
 #include "core/error/error_macros.h"
+#include "core/io/file_access.h"
 #include "core/object/class_db.h"
 
 #include <vtfpp/VTF.h>
@@ -23,6 +26,22 @@
 SourcePPVTF::SourcePPVTF() = default;
 
 SourcePPVTF::~SourcePPVTF() = default;
+
+void SourcePPVTF::set_resolver(const Ref<SourcePPResolver> &p_resolver) {
+	resolver = p_resolver;
+}
+
+Ref<SourcePPResolver> SourcePPVTF::get_resolver() const {
+	return resolver;
+}
+
+void SourcePPVTF::set_resolver_game_id(const String &p_game_id) {
+	resolver_game_id = p_game_id.strip_edges().to_lower();
+}
+
+String SourcePPVTF::get_resolver_game_id() const {
+	return resolver_game_id;
+}
 
 std::string SourcePPVTF::_to_utf8(const String &p_string) {
 	CharString utf8 = p_string.utf8();
@@ -134,6 +153,33 @@ Error SourcePPVTF::_normalize_image(const Ref<Image> &p_image, Ref<Image> &r_ima
 	}
 }
 
+PackedByteArray SourcePPVTF::_read_file_bytes(const String &p_path, Error *r_error) const {
+	Error error = OK;
+	PackedByteArray bytes = FileAccess::get_file_as_bytes(p_path, &error);
+	if (error == OK) {
+		if (r_error != nullptr) {
+			*r_error = OK;
+		}
+		return bytes;
+	}
+
+	if (resolver.is_valid()) {
+		const PackedByteArray resolved = resolver_game_id.is_empty() ? resolver->read_file(p_path) : resolver->read_file(p_path, resolver_game_id);
+		const bool has_resolved_file = resolver_game_id.is_empty() ? resolver->has_file(p_path) : resolver->has_file(p_path, resolver_game_id);
+		if (!resolved.is_empty() || has_resolved_file) {
+			if (r_error != nullptr) {
+				*r_error = OK;
+			}
+			return resolved;
+		}
+	}
+
+	if (r_error != nullptr) {
+		*r_error = error == OK ? ERR_FILE_NOT_FOUND : error;
+	}
+	return PackedByteArray();
+}
+
 vtfpp::VTF *SourcePPVTF::get_texture() {
 	return texture.get();
 }
@@ -145,11 +191,25 @@ const vtfpp::VTF *SourcePPVTF::get_texture() const {
 Error SourcePPVTF::open(const String &p_path, bool p_parse_header_only) {
 	close();
 
-	auto loaded = std::make_unique<vtfpp::VTF>(std::filesystem::path(_to_utf8(p_path)), p_parse_header_only);
-	if (!static_cast<bool>(*loaded)) {
-		return ERR_FILE_CANT_OPEN;
+	if (FileAccess::exists(p_path)) {
+		auto loaded = std::make_unique<vtfpp::VTF>(std::filesystem::path(_to_utf8(p_path)), p_parse_header_only);
+		if (!static_cast<bool>(*loaded)) {
+			return ERR_FILE_CANT_OPEN;
+		}
+		texture = std::move(loaded);
+		source_path = p_path;
+		return OK;
 	}
-	texture = std::move(loaded);
+
+	Error read_error = OK;
+	const PackedByteArray data = _read_file_bytes(p_path, &read_error);
+	ERR_FAIL_COND_V_MSG(read_error != OK, read_error, "Failed to load the VTF file.");
+
+	const Error open_error = open_from_buffer(data, p_parse_header_only);
+	if (open_error != OK) {
+		return open_error;
+	}
+
 	source_path = p_path;
 	return OK;
 }
@@ -390,6 +450,10 @@ void SourcePPVTF::set_platform(int p_platform) {
 }
 
 void SourcePPVTF::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_resolver", "resolver"), &SourcePPVTF::set_resolver);
+	ClassDB::bind_method(D_METHOD("get_resolver"), &SourcePPVTF::get_resolver);
+	ClassDB::bind_method(D_METHOD("set_resolver_game_id", "game_id"), &SourcePPVTF::set_resolver_game_id);
+	ClassDB::bind_method(D_METHOD("get_resolver_game_id"), &SourcePPVTF::get_resolver_game_id);
 	ClassDB::bind_method(D_METHOD("open", "path", "parse_header_only"), &SourcePPVTF::open, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("open_from_buffer", "data", "parse_header_only"), &SourcePPVTF::open_from_buffer, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("create", "width", "height", "format", "version", "srgb", "generate_mips", "generate_thumbnail"), &SourcePPVTF::create, DEFVAL(FORMAT_RGBA8888), DEFVAL(4), DEFVAL(false), DEFVAL(true), DEFVAL(true));
@@ -429,6 +493,8 @@ void SourcePPVTF::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_platform"), &SourcePPVTF::get_platform);
 	ClassDB::bind_method(D_METHOD("set_platform", "platform"), &SourcePPVTF::set_platform);
 
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "resolver", PROPERTY_HINT_RESOURCE_TYPE, "SourcePPResolver"), "set_resolver", "get_resolver");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING, "resolver_game_id"), "set_resolver_game_id", "get_resolver_game_id");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "format"), "set_format", "get_format");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "version"), "set_version", "get_version");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "flags"), "set_flags", "get_flags");

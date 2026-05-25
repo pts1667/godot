@@ -10,6 +10,8 @@ def get_doc_classes():
     return [
         "SourceAnimPlayer",
         "SourcePPMDL",
+        "SourcePPResolver",
+        "SourcePPVMT",
         "SourcePPVPK",
         "SourcePPVTF",
     ]

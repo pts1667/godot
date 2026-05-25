@@ -151,7 +151,7 @@
 			<param index="0" name="path" type="String" />
 			<param index="1" name="parse_header_only" type="bool" default="false" />
 			<description>
-				Opens the VTF at [param path]. If [param parse_header_only] is [code]true[/code], image payload data may be left unopened until needed.
+				Opens the VTF at [param path]. If [member resolver] is assigned, [param path] can also point at a registered VPK entry rather than a loose file. If [param parse_header_only] is [code]true[/code], image payload data may be left unopened until needed.
 			</description>
 		</method>
 		<method name="open_from_buffer">
@@ -195,6 +195,12 @@
 		</method>
 	</methods>
 	<members>
+		<member name="resolver" type="SourcePPResolver" setter="set_resolver" getter="get_resolver" default="null">
+			Optional resolver used to load VTF files directly from registered Source game VPKs.
+		</member>
+		<member name="resolver_game_id" type="String" setter="set_resolver_game_id" getter="get_resolver_game_id" default="&quot;&quot;">
+			Optional registered game ID used when querying [member resolver]. If empty, the resolver iterates over registered games in registration order for each requested entry.
+		</member>
 		<member name="flags" type="int" setter="set_flags" getter="get_flags" default="0">
 			The raw VTF flags bitmask.
 		</member>

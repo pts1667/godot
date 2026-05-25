@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPVMT" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Allows reading Source Engine VMT material definitions through the bundled SourcePP KeyValues parser.
+	</brief_description>
+	<description>
+		[SourcePPVMT] exposes a first-cut wrapper over Source material scripts, which are KeyValues text files such as [code]VertexLitGeneric[/code] and [code]LightmappedGeneric[/code].
+		It can open a VMT from disk, memory, or a resolver-backed VPK entry, expose the root shader name and parsed properties, and build a stub [StandardMaterial3D] approximation using the supplied diffuse and detail textures.
+		The generated Godot material intentionally stays simple for now: Source-specific values that do not map cleanly to built-in Godot material features, such as Source's detail scale semantics, are preserved as metadata on the returned material for a future importer pass.
+		[codeblock]
+		var vmt := SourcePPVMT.new()
+		if vmt.open("user://materials/props/crate01.vmt") != OK:
+			return
+
+		print(vmt.get_shader())
+		print(vmt.get_base_texture_path())
+		print(vmt.get_properties())
+		[/codeblock]
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="close">
+			<return type="void" />
+			<description>
+				Releases the currently loaded VMT.
+			</description>
+		</method>
+		<method name="create_material">
+			<return type="StandardMaterial3D" />
+			<param index="0" name="base_texture" type="Texture2D" default="null" />
+			<param index="1" name="detail_texture" type="Texture2D" default="null" />
+			<param index="2" name="detail_mask" type="Texture2D" default="null" />
+			<description>
+				Builds a stub [StandardMaterial3D] from the currently loaded VMT using the provided Godot textures. If [param base_texture] or [param detail_texture] are [code]null[/code], [SourcePPVMT] attempts to resolve and load the referenced VTFs automatically through its current path and [member resolver]. The approximation maps the diffuse texture to albedo and, when available, also applies detail, bump, and self-illum mask textures.
+				Source-specific values that do not map directly to [StandardMaterial3D] are stored as metadata on the returned material using [code]sourcepp_vmt_*[/code] keys.
+			</description>
+		</method>
+		<method name="get_base_texture_path">
+			<return type="String" />
+			<description>
+				Returns the normalized [code]$basetexture[/code] reference, or an empty string if the VMT does not define one.
+			</description>
+		</method>
+		<method name="get_resolved_base_texture_path">
+			<return type="String" />
+			<description>
+				Returns the resolved VTF asset path for [code]$basetexture[/code], or an empty string if the reference cannot be matched to a loose file or resolver-backed VPK entry.
+			</description>
+		</method>
+		<method name="get_detail_blend_factor">
+			<return type="float" />
+			<description>
+				Returns the parsed [code]$detailblendfactor[/code] value, or [code]1.0[/code] if it is not present.
+			</description>
+		</method>
+		<method name="get_bump_map_path">
+			<return type="String" />
+			<description>
+				Returns the normalized [code]$bumpmap[/code] reference, or an empty string if the VMT does not define one.
+			</description>
+		</method>
+		<method name="get_resolved_bump_map_path">
+			<return type="String" />
+			<description>
+				Returns the resolved VTF asset path for [code]$bumpmap[/code], or an empty string if the reference cannot be matched to a loose file or resolver-backed VPK entry.
+			</description>
+		</method>
+		<method name="get_detail_scale">
+			<return type="float" />
+			<description>
+				Returns the parsed [code]$detailscale[/code] value, or [code]1.0[/code] if it is not present.
+			</description>
+		</method>
+		<method name="get_detail_texture_path">
+			<return type="String" />
+			<description>
+				Returns the normalized [code]$detail[/code] reference, or an empty string if the VMT does not define one.
+			</description>
+		</method>
+		<method name="get_resolved_detail_texture_path">
+			<return type="String" />
+			<description>
+				Returns the resolved VTF asset path for [code]$detail[/code], or an empty string if the reference cannot be matched to a loose file or resolver-backed VPK entry.
+			</description>
+		</method>
+		<method name="get_self_illum_mask_path">
+			<return type="String" />
+			<description>
+				Returns the normalized [code]$selfillummask[/code] reference, or an empty string if the VMT does not define one.
+			</description>
+		</method>
+		<method name="get_resolved_self_illum_mask_path">
+			<return type="String" />
+			<description>
+				Returns the resolved VTF asset path for [code]$selfillummask[/code], or an empty string if the reference cannot be matched to a loose file or resolver-backed VPK entry.
+			</description>
+		</method>
+		<method name="get_texture_dependencies">
+			<return type="Dictionary" />
+			<description>
+				Returns a dictionary of relevant VMT texture keys to their normalized raw asset references. The current set includes keys such as [code]$basetexture[/code], [code]$detail[/code], [code]$bumpmap[/code], [code]$selfillummask[/code], and [code]$envmapmask[/code] when present.
+			</description>
+		</method>
+		<method name="get_resolved_texture_dependencies">
+			<return type="Dictionary" />
+			<description>
+				Returns a dictionary of relevant VMT texture keys to resolved VTF asset paths that can be opened from disk or through [member resolver]. Unresolvable references are omitted.
+			</description>
+		</method>
+		<method name="get_path">
+			<return type="String" />
+			<description>
+				Returns the last path used to open this VMT, or an empty string if it only exists in memory.
+			</description>
+		</method>
+		<method name="get_properties">
+			<return type="Dictionary" />
+			<description>
+				Returns the parsed root material block as a nested [Dictionary]. Leaf values are returned as strings. Nested KeyValues blocks become nested dictionaries, and duplicate keys are preserved as arrays.
+			</description>
+		</method>
+		<method name="get_shader">
+			<return type="String" />
+			<description>
+				Returns the root VMT shader key, such as [code]VertexLitGeneric[/code] or [code]LightmappedGeneric[/code].
+			</description>
+		</method>
+		<method name="get_value">
+			<return type="String" />
+			<param index="0" name="key" type="String" />
+			<param index="1" name="default_value" type="String" default="&quot;&quot;" />
+			<description>
+				Returns a top-level value from the root material block. If the key is missing, [param default_value] is returned instead.
+			</description>
+		</method>
+		<method name="has_value">
+			<return type="bool" />
+			<param index="0" name="key" type="String" />
+			<description>
+				Returns [code]true[/code] if the root material block contains [param key].
+			</description>
+		</method>
+		<method name="is_open">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if a VMT is currently loaded.
+			</description>
+		</method>
+		<method name="open">
+			<return type="int" enum="Error" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Opens a VMT from disk. If [member resolver] is assigned, [param path] can also point at a registered VPK entry.
+			</description>
+		</method>
+		<method name="open_from_buffer">
+			<return type="int" enum="Error" />
+			<param index="0" name="data" type="PackedByteArray" />
+			<description>
+				Opens a VMT from in-memory text bytes.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="resolver" type="SourcePPResolver" setter="set_resolver" getter="get_resolver" default="null">
+			Optional resolver used to load VMT files directly from registered Source game VPKs.
+		</member>
+		<member name="resolver_game_id" type="String" setter="set_resolver_game_id" getter="get_resolver_game_id" default="&quot;&quot;">
+			Optional registered game ID used when querying [member resolver]. If empty, the resolver iterates over registered games in registration order for each requested entry.
+		</member>
+	</members>
+</class>
