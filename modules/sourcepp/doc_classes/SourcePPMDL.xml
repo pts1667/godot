@@ -5,7 +5,7 @@
 	</brief_description>
 	<description>
 		[SourcePPMDL] exposes a first-cut wrapper over SourcePP's MDL support for scripts.
-		It opens a model from the required [code].mdl[/code], [code].vtx[/code], and [code].vvd[/code] files, exposes basic metadata, and can bake the chosen LOD into a Godot [ArrayMesh].
+		It opens a model from the required [code].mdl[/code], [code].vtx[/code], and [code].vvd[/code] files, exposes basic metadata, and can bake the chosen LOD into a Godot [ArrayMesh] with tangent and four-weight skinning data. The wrapper can also build a matching [Skin] resource and a detached [Skeleton3D] node from the parsed MDL rest pose.
 		If the model references external Source animation blocks, [method open] tries to resolve the companion [code].ani[/code] blob automatically and [method open_from_buffer] can accept it explicitly.
 		If [param vtx_path] or [param vvd_path] are omitted when calling [method open], the wrapper tries to resolve common companion filenames next to the MDL automatically.
 		[codeblock]
@@ -31,7 +31,19 @@
 			<return type="ArrayMesh" />
 			<param index="0" name="lod" type="int" default="0" />
 			<description>
-				Builds a Godot [ArrayMesh] for the selected LOD. One surface is created per baked MDL mesh, with surface names set from the resolved material names when available.
+				Builds a Godot [ArrayMesh] for the selected LOD. One surface is created per baked MDL mesh, with surface names set from the resolved material names when available. The mesh includes normals, tangents, UVs, up to four bone indices, and up to four bone weights per vertex.
+			</description>
+		</method>
+		<method name="create_skin">
+			<return type="Skin" />
+			<description>
+				Builds a Godot [Skin] resource whose bind poses are derived from the MDL global rest transforms. Use it together with [method create_mesh] and [method create_skeleton] for a skinned import path.
+			</description>
+		</method>
+		<method name="create_skeleton">
+			<return type="Skeleton3D" />
+			<description>
+				Builds a detached [Skeleton3D] node from the parsed MDL bone hierarchy and local rest transforms.
 			</description>
 		</method>
 		<method name="create_sequence_animation">
@@ -84,10 +96,28 @@
 				Returns the MDL body part names.
 			</description>
 		</method>
+		<method name="get_bone_controller_count">
+			<return type="int" />
+			<description>
+				Returns the number of parsed bone controller definitions.
+			</description>
+		</method>
+		<method name="get_bone_controllers">
+			<return type="Array" />
+			<description>
+				Returns parsed bone controllers as dictionaries. Each dictionary contains [code]bone[/code], [code]bone_name[/code], [code]type[/code], [code]start[/code], [code]end[/code], [code]rest[/code], [code]rest_normalized[/code], and [code]input_field[/code].
+			</description>
+		</method>
 		<method name="get_bone_names">
 			<return type="PackedStringArray" />
 			<description>
 				Returns the parsed bone names.
+			</description>
+		</method>
+		<method name="get_skeleton_bones">
+			<return type="Array" />
+			<description>
+				Returns the parsed skeleton bones as dictionaries. Each dictionary contains [code]name[/code], [code]parent[/code], [code]flags[/code], [code]position[/code], [code]rotation[/code], [code]scale[/code], and [code]pose_to_bone[/code].
 			</description>
 		</method>
 		<method name="get_checksum">
@@ -241,6 +271,9 @@
 		</member>
 		<member name="animation_descriptor_count" type="int" getter="get_animation_descriptor_count" default="0">
 			The number of parsed local animation descriptors.
+		</member>
+		<member name="bone_controller_count" type="int" getter="get_bone_controller_count" default="0">
+			The number of parsed bone controller definitions.
 		</member>
 		<member name="checksum" type="int" getter="get_checksum" default="0">
 			The parsed MDL checksum.

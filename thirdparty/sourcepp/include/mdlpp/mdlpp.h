@@ -16,12 +16,16 @@ struct BakedModel {
 		sourcepp::math::Vec3f position;
 		sourcepp::math::Vec3f normal;
 		sourcepp::math::Vec2f uv;
+		sourcepp::math::Vec4f tangent{};
+		std::array<int32_t, 4> bones{};
+		std::array<float, 4> weights{};
 	};
 	std::vector<Vertex> vertices;
 
 	struct Mesh {
-		std::vector<uint16_t> indices;
+		std::vector<uint32_t> indices;
 		int32_t materialIndex = -1;
+		std::string materialName;
 	};
 	std::vector<Mesh> meshes;
 };

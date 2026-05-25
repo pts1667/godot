@@ -11,6 +11,7 @@
 #include "core/error/error_macros.h"
 #include "core/math/transform_3d.h"
 #include "core/object/class_db.h"
+#include "scene/3d/skeleton_3d.h"
 
 #include <mdlpp/mdlpp.h>
 
@@ -25,6 +26,10 @@ Vector3 _to_vector3(const sourcepp::math::Vec3f &p_vector) {
 
 Quaternion _to_quaternion(const sourcepp::math::Quat &p_quaternion) {
 	return Quaternion(p_quaternion[0], p_quaternion[1], p_quaternion[2], p_quaternion[3]);
+}
+
+Transform3D _to_bone_rest(const mdlpp::MDL::Bone &p_bone) {
+	return Transform3D(Basis(_to_quaternion(p_bone.rotationQuat)), _to_vector3(p_bone.position));
 }
 
 String _resolve_anim_block_path(const String &p_model_path, const mdlpp::MDL::MDL &p_mdl) {
@@ -72,6 +77,57 @@ String _get_bone_track_name(const mdlpp::StudioModel *p_model, int p_bone) {
 		return String::utf8(p_model->mdl.bones[static_cast<size_t>(p_bone)].name.c_str());
 	}
 	return vformat("bone_%d", p_bone);
+}
+
+Vector<Transform3D> _build_global_bone_rests(const mdlpp::StudioModel *p_model) {
+	Vector<Transform3D> global_rests;
+	if (p_model == nullptr) {
+		return global_rests;
+	}
+
+	const int bone_count = static_cast<int>(p_model->mdl.bones.size());
+	global_rests.resize(bone_count);
+	Vector<uint8_t> computed;
+	computed.resize(bone_count);
+	for (int i = 0; i < bone_count; i++) {
+		computed.write[i] = 0;
+	}
+
+	auto resolve_rest = [&](auto &&p_self, int p_bone) -> Transform3D {
+		ERR_FAIL_INDEX_V(p_bone, bone_count, Transform3D());
+		if (computed[p_bone] != 0) {
+			return global_rests[p_bone];
+		}
+
+		const mdlpp::MDL::Bone &bone = p_model->mdl.bones[static_cast<size_t>(p_bone)];
+		Transform3D global_rest = _to_bone_rest(bone);
+		if (bone.parent >= 0 && bone.parent < bone_count) {
+			global_rest = p_self(p_self, bone.parent) * global_rest;
+		}
+
+		global_rests.write[p_bone] = global_rest;
+		computed.write[p_bone] = 1;
+		return global_rest;
+	};
+
+	for (int bone_index = 0; bone_index < bone_count; bone_index++) {
+		(void)resolve_rest(resolve_rest, bone_index);
+	}
+
+	return global_rests;
+}
+
+Dictionary _make_bone_controller_info(const mdlpp::StudioModel *p_model, const mdlpp::MDL::BoneController &p_controller) {
+	Dictionary out;
+	out["bone"] = p_controller.bone;
+	out["bone_name"] = _get_bone_track_name(p_model, p_controller.bone);
+	out["type"] = p_controller.type;
+	out["start"] = p_controller.start;
+	out["end"] = p_controller.end;
+	out["rest"] = p_controller.rest;
+	out["rest_normalized"] = CLAMP(static_cast<float>(p_controller.rest) / 255.0f, 0.0f, 1.0f);
+	out["input_field"] = p_controller.inputField;
+	return out;
 }
 
 NodePath _make_bone_track_path(const NodePath &p_skeleton_path, const String &p_bone_name) {
@@ -288,6 +344,38 @@ PackedStringArray SourcePPMDL::get_bone_names() const {
 	PackedStringArray out;
 	for (const mdlpp::MDL::Bone &bone : get_model()->mdl.bones) {
 		out.push_back(_from_utf8(bone.name));
+	}
+	return out;
+}
+
+Array SourcePPMDL::get_skeleton_bones() const {
+	ERR_FAIL_COND_V_MSG(get_model() == nullptr, Array(), "SourcePPMDL must be opened before use.");
+
+	Array out;
+	for (int bone_index = 0; bone_index < static_cast<int>(get_model()->mdl.bones.size()); bone_index++) {
+		const mdlpp::MDL::Bone &bone = get_model()->mdl.bones[static_cast<size_t>(bone_index)];
+		Dictionary bone_info;
+		bone_info["index"] = bone_index;
+		bone_info["name"] = _get_bone_track_name(get_model(), bone_index);
+		bone_info["parent"] = bone.parent;
+		bone_info["rest"] = _to_bone_rest(bone);
+		bone_info["enabled"] = true;
+		out.push_back(bone_info);
+	}
+	return out;
+}
+
+int SourcePPMDL::get_bone_controller_count() const {
+	ERR_FAIL_COND_V_MSG(get_model() == nullptr, 0, "SourcePPMDL must be opened before use.");
+	return static_cast<int>(get_model()->mdl.boneControllers.size());
+}
+
+Array SourcePPMDL::get_bone_controllers() const {
+	ERR_FAIL_COND_V_MSG(get_model() == nullptr, Array(), "SourcePPMDL must be opened before use.");
+
+	Array out;
+	for (const mdlpp::MDL::BoneController &controller : get_model()->mdl.boneControllers) {
+		out.push_back(_make_bone_controller_info(get_model(), controller));
 	}
 	return out;
 }
@@ -646,7 +734,9 @@ PackedStringArray SourcePPMDL::get_surface_materials(int p_lod) const {
 
 	PackedStringArray out;
 	for (const mdlpp::BakedModel::Mesh &mesh : baked_model.meshes) {
-		if (mesh.materialIndex >= 0 && mesh.materialIndex < static_cast<int>(get_model()->mdl.materials.size())) {
+		if (!mesh.materialName.empty()) {
+			out.push_back(_from_utf8(mesh.materialName));
+		} else if (mesh.materialIndex >= 0 && mesh.materialIndex < static_cast<int>(get_model()->mdl.materials.size())) {
 			out.push_back(_from_utf8(get_model()->mdl.materials[static_cast<size_t>(mesh.materialIndex)].name));
 		} else {
 			out.push_back(String());
@@ -665,15 +755,29 @@ Ref<ArrayMesh> SourcePPMDL::create_mesh(int p_lod) const {
 	Vector<Vector3> vertices;
 	Vector<Vector3> normals;
 	Vector<Vector2> uvs;
+	Vector<float> tangents;
+	Vector<int> bones;
+	Vector<float> weights;
 	vertices.resize(static_cast<int>(baked_model.vertices.size()));
 	normals.resize(static_cast<int>(baked_model.vertices.size()));
 	uvs.resize(static_cast<int>(baked_model.vertices.size()));
+	tangents.resize(static_cast<int>(baked_model.vertices.size()) * 4);
+	bones.resize(static_cast<int>(baked_model.vertices.size()) * 4);
+	weights.resize(static_cast<int>(baked_model.vertices.size()) * 4);
 
 	for (int i = 0; i < vertices.size(); i++) {
 		const mdlpp::BakedModel::Vertex &vertex = baked_model.vertices[static_cast<size_t>(i)];
 		vertices.write[i] = Vector3(vertex.position[0], vertex.position[1], vertex.position[2]);
 		normals.write[i] = Vector3(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
 		uvs.write[i] = Vector2(vertex.uv[0], vertex.uv[1]);
+		tangents.write[i * 4 + 0] = vertex.tangent[0];
+		tangents.write[i * 4 + 1] = vertex.tangent[1];
+		tangents.write[i * 4 + 2] = vertex.tangent[2];
+		tangents.write[i * 4 + 3] = vertex.tangent[3];
+		for (int weight_index = 0; weight_index < 4; weight_index++) {
+			bones.write[i * 4 + weight_index] = vertex.bones[static_cast<size_t>(weight_index)];
+			weights.write[i * 4 + weight_index] = vertex.weights[static_cast<size_t>(weight_index)];
+		}
 	}
 
 	for (int mesh_index = 0; mesh_index < static_cast<int>(baked_model.meshes.size()); mesh_index++) {
@@ -682,22 +786,64 @@ Ref<ArrayMesh> SourcePPMDL::create_mesh(int p_lod) const {
 		arrays.resize(Mesh::ARRAY_MAX);
 		arrays[Mesh::ARRAY_VERTEX] = vertices;
 		arrays[Mesh::ARRAY_NORMAL] = normals;
+		arrays[Mesh::ARRAY_TANGENT] = tangents;
 		arrays[Mesh::ARRAY_TEX_UV] = uvs;
+		arrays[Mesh::ARRAY_BONES] = bones;
+		arrays[Mesh::ARRAY_WEIGHTS] = weights;
 
 		Vector<int> indices;
 		indices.resize(static_cast<int>(baked_mesh.indices.size()));
 		for (int i = 0; i < indices.size(); i++) {
-			indices.write[i] = baked_mesh.indices[static_cast<size_t>(i)];
+			indices.write[i] = static_cast<int>(baked_mesh.indices[static_cast<size_t>(i)]);
 		}
 		arrays[Mesh::ARRAY_INDEX] = indices;
 
 		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
-		if (baked_mesh.materialIndex >= 0 && baked_mesh.materialIndex < static_cast<int>(get_model()->mdl.materials.size())) {
+		if (!baked_mesh.materialName.empty()) {
+			mesh->surface_set_name(mesh_index, _from_utf8(baked_mesh.materialName));
+		} else if (baked_mesh.materialIndex >= 0 && baked_mesh.materialIndex < static_cast<int>(get_model()->mdl.materials.size())) {
 			mesh->surface_set_name(mesh_index, _from_utf8(get_model()->mdl.materials[static_cast<size_t>(baked_mesh.materialIndex)].name));
 		}
 	}
 
 	return mesh;
+}
+
+Ref<Skin> SourcePPMDL::create_skin() const {
+	ERR_FAIL_COND_V_MSG(get_model() == nullptr, Ref<Skin>(), "SourcePPMDL must be opened before use.");
+
+	Ref<Skin> skin;
+	skin.instantiate();
+	const int bone_count = static_cast<int>(get_model()->mdl.bones.size());
+	skin->set_bind_count(bone_count);
+
+	const Vector<Transform3D> global_rests = _build_global_bone_rests(get_model());
+	for (int bone_index = 0; bone_index < bone_count; bone_index++) {
+		skin->set_bind_bone(bone_index, bone_index);
+		skin->set_bind_name(bone_index, StringName(_get_bone_track_name(get_model(), bone_index)));
+		skin->set_bind_pose(bone_index, global_rests[bone_index].affine_inverse());
+	}
+
+	return skin;
+}
+
+Skeleton3D *SourcePPMDL::create_skeleton() const {
+	ERR_FAIL_COND_V_MSG(get_model() == nullptr, nullptr, "SourcePPMDL must be opened before use.");
+
+	Skeleton3D *skeleton = memnew(Skeleton3D);
+	for (int bone_index = 0; bone_index < static_cast<int>(get_model()->mdl.bones.size()); bone_index++) {
+		skeleton->add_bone(_get_bone_track_name(get_model(), bone_index));
+	}
+
+	for (int bone_index = 0; bone_index < static_cast<int>(get_model()->mdl.bones.size()); bone_index++) {
+		const mdlpp::MDL::Bone &bone = get_model()->mdl.bones[static_cast<size_t>(bone_index)];
+		if (bone.parent >= 0 && bone.parent < static_cast<int>(get_model()->mdl.bones.size())) {
+			skeleton->set_bone_parent(bone_index, bone.parent);
+		}
+		skeleton->set_bone_rest(bone_index, _to_bone_rest(bone));
+	}
+	skeleton->reset_bone_poses();
+	return skeleton;
 }
 
 void SourcePPMDL::_bind_methods() {
@@ -718,6 +864,9 @@ void SourcePPMDL::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_material_directories"), &SourcePPMDL::get_material_directories);
 	ClassDB::bind_method(D_METHOD("get_skin_families"), &SourcePPMDL::get_skin_families);
 	ClassDB::bind_method(D_METHOD("get_bone_names"), &SourcePPMDL::get_bone_names);
+	ClassDB::bind_method(D_METHOD("get_skeleton_bones"), &SourcePPMDL::get_skeleton_bones);
+	ClassDB::bind_method(D_METHOD("get_bone_controller_count"), &SourcePPMDL::get_bone_controller_count);
+	ClassDB::bind_method(D_METHOD("get_bone_controllers"), &SourcePPMDL::get_bone_controllers);
 	ClassDB::bind_method(D_METHOD("get_body_parts"), &SourcePPMDL::get_body_parts);
 	ClassDB::bind_method(D_METHOD("get_attachment_count"), &SourcePPMDL::get_attachment_count);
 	ClassDB::bind_method(D_METHOD("get_attachments"), &SourcePPMDL::get_attachments);
@@ -736,9 +885,12 @@ void SourcePPMDL::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_surface_material_indices", "lod"), &SourcePPMDL::get_surface_material_indices, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("get_surface_materials", "lod"), &SourcePPMDL::get_surface_materials, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("create_mesh", "lod"), &SourcePPMDL::create_mesh, DEFVAL(0));
+	ClassDB::bind_method(D_METHOD("create_skin"), &SourcePPMDL::create_skin);
+	ClassDB::bind_method(D_METHOD("create_skeleton"), &SourcePPMDL::create_skeleton);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "attachment_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_attachment_count");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "animation_descriptor_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_animation_descriptor_count");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "bone_controller_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_bone_controller_count");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "checksum", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_checksum");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "hitbox_set_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_hitbox_set_count");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "lod_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_lod_count");

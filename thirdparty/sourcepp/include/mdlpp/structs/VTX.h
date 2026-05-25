@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "MDL.h"
@@ -10,10 +12,15 @@
 namespace mdlpp::VTX {
 
 struct Vertex {
-	//uint8_t boneWeightIndex[3];
-	//uint8_t boneCount;
-	uint16_t meshVertexID;
-	//int8_t boneID[3];
+	std::array<uint8_t, 3> boneWeightIndex{};
+	uint8_t boneCount = 0;
+	uint16_t meshVertexID = 0;
+	std::array<int8_t, 3> boneID{};
+};
+
+struct BoneStateChange {
+	int32_t hardwareID = 0;
+	int32_t newBoneID = 0;
 };
 
 struct Strip {
@@ -34,8 +41,8 @@ struct Strip {
 	int16_t boneCount = 0;
 	Flags flags = FLAG_NONE;
 
-	//int32_t boneStateChangeCount;
-	//int32_t boneStateChangeOffset;
+	int32_t boneStateChangeCount = 0;
+	std::vector<BoneStateChange> boneStateChanges;
 
 	// On MDL version >= 49:
 	//int32_t numTopologyIndices;
@@ -107,8 +114,14 @@ struct BodyPart {
 	std::vector<Model> models;
 };
 
+struct MaterialReplacement {
+	int16_t materialID = -1;
+	std::string replacementMaterialName;
+};
+
 struct VTX {
 	[[nodiscard]] bool open(const std::byte* data, std::size_t size, const MDL::MDL& mdl);
+	[[nodiscard]] const MaterialReplacement *findMaterialReplacement(int32_t lod, int16_t material_id) const;
 
 	int32_t version;
 	int32_t vertexCacheSize;
@@ -118,7 +131,7 @@ struct VTX {
 	//int32_t checksum;
 	int32_t numLODs;
 
-	//int32_t materialReplacementListOffset;
+	std::vector<std::vector<MaterialReplacement>> materialReplacementLists;
 
 	//int32_t bodyPartCount;
 	//int32_t bodyPartOffset;

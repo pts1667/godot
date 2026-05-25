@@ -68,6 +68,7 @@ class SourceAnimPlayer : public Node {
 	NodePath skeleton_path;
 	ObjectID skeleton_cache;
 	Vector<int> model_to_skeleton_bones;
+	PackedFloat32Array controller_values;
 
 	int sequence_descriptor = -1;
 	Vector2 blend_values;
@@ -91,6 +92,9 @@ class SourceAnimPlayer : public Node {
 	void _refresh_bone_map();
 	void _reset_mapped_bone_poses();
 	void _set_processing_enabled(bool p_enabled);
+	void _reset_controller_values();
+	void _apply_bone_controllers(PoseBuffer &r_pose) const;
+	const mdlpp::MDL::BoneController *_find_bone_controller(int p_input_field) const;
 
 	void _initialize_pose_buffer(PoseBuffer &r_pose, bool p_delta) const;
 	bool _ensure_sampled_animation(int p_animation_descriptor) const;
@@ -115,6 +119,12 @@ class SourceAnimPlayer : public Node {
 	int get_sequence_descriptor() const;
 	void set_blend_values(const Vector2 &p_blend_values);
 	Vector2 get_blend_values() const;
+	void set_controller_values(const PackedFloat32Array &p_controller_values);
+	PackedFloat32Array get_controller_values() const;
+	void set_controller_value(int p_input_field, float p_value);
+	float get_controller_value(int p_input_field) const;
+	float set_controller_ranged_value(int p_input_field, float p_value);
+	float get_controller_ranged_value(int p_input_field) const;
 	void set_ik_enabled(bool p_enabled);
 	bool is_ik_enabled() const;
 	void set_speed_scale(float p_speed_scale);
@@ -136,6 +146,8 @@ public:
 	String get_mdl_path() const;
 	String get_vtx_path() const;
 	String get_vvd_path() const;
+	int get_bone_controller_count() const;
+	Array get_bone_controllers() const;
 	int get_sequence_count() const;
 	PackedStringArray get_sequence_names() const;
 	bool has_sequence(const StringName &p_name) const;

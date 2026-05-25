@@ -472,20 +472,44 @@ StudioModel::operator bool() const {
 
 BakedModel StudioModel::processModelData(int currentLOD) const {
 	BakedModel model;
+	std::vector<int32_t> source_to_baked_vertex(this->vvd.vertices.size(), -1);
 
-	// According to my limited research, vertices stay constant (ignoring LOD fixups) but indices vary with LOD level
 	static constexpr auto convertVertex = [](const VVD::Vertex& vertex) {
-		return BakedModel::Vertex{vertex.position, vertex.normal, vertex.uv};
+		BakedModel::Vertex baked_vertex{};
+		baked_vertex.position = vertex.position;
+		baked_vertex.normal = vertex.normal;
+		baked_vertex.uv = vertex.uv;
+		baked_vertex.tangent = vertex.tangent;
+		for (size_t weight_index = 0; weight_index < vertex.boneWeight.bones.size() && weight_index < MAX_BONES_PER_VERTEX; weight_index++) {
+			baked_vertex.bones[weight_index] = static_cast<int32_t>(vertex.boneWeight.bones[weight_index]);
+			baked_vertex.weights[weight_index] = vertex.boneWeight.weight[weight_index];
+		}
+		return baked_vertex;
 	};
+
+	auto add_baked_vertex = [&](int32_t source_vertex_index) {
+		if (source_vertex_index < 0 || source_vertex_index >= static_cast<int32_t>(this->vvd.vertices.size())) {
+			return;
+		}
+		if (source_to_baked_vertex[static_cast<size_t>(source_vertex_index)] != -1) {
+			return;
+		}
+		source_to_baked_vertex[static_cast<size_t>(source_vertex_index)] = static_cast<int32_t>(model.vertices.size());
+		model.vertices.push_back(convertVertex(this->vvd.vertices[static_cast<size_t>(source_vertex_index)]));
+	};
+
 	if (this->vvd.fixups.empty()) {
-		std::transform(this->vvd.vertices.begin(), this->vvd.vertices.end(), std::back_inserter(model.vertices), convertVertex);
+		for (int32_t source_vertex_index = 0; source_vertex_index < static_cast<int32_t>(this->vvd.vertices.size()); source_vertex_index++) {
+			add_baked_vertex(source_vertex_index);
+		}
 	} else {
 		for (const auto& [LOD, sourceVertexID, vertexCount] : this->vvd.fixups) {
 			if (LOD < currentLOD) {
 				continue;
 			}
-			std::span fixupVertices{this->vvd.vertices.begin() + sourceVertexID, static_cast<std::span<const VVD::Vertex>::size_type>(vertexCount)};
-			std::transform(fixupVertices.begin(), fixupVertices.end(), std::back_inserter(model.vertices), convertVertex);
+			for (int32_t vertex_index = 0; vertex_index < vertexCount; vertex_index++) {
+				add_baked_vertex(sourceVertexID + vertex_index);
+			}
 		}
 	}
 
@@ -505,31 +529,54 @@ BakedModel StudioModel::processModelData(int currentLOD) const {
 				auto& mdlMesh = mdlModel.meshes.at(meshIndex);
 				auto& vtxMesh = vtxModel.modelLODs.at(currentLOD).meshes.at(meshIndex);
 
-				std::vector<uint16_t> indices;
+				std::vector<uint32_t> indices;
 				for (const auto& stripGroup : vtxMesh.stripGroups) {
-					for (const auto& strip : stripGroup.strips) {
-						const auto addIndex = [&indices, mdlMesh, mdlModel, stripGroup](int index) {
-							indices.push_back(stripGroup.vertices.at(index).meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset);
-						};
+					auto append_triangle = [&](uint16_t p_index_a, uint16_t p_index_b, uint16_t p_index_c) {
+						const int32_t source_index_a = stripGroup.vertices.at(p_index_a).meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
+						const int32_t source_index_b = stripGroup.vertices.at(p_index_b).meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
+						const int32_t source_index_c = stripGroup.vertices.at(p_index_c).meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
 
+						if (source_index_a < 0 || source_index_b < 0 || source_index_c < 0 ||
+								source_index_a >= static_cast<int32_t>(source_to_baked_vertex.size()) ||
+								source_index_b >= static_cast<int32_t>(source_to_baked_vertex.size()) ||
+								source_index_c >= static_cast<int32_t>(source_to_baked_vertex.size())) {
+							return;
+						}
+
+						const int32_t baked_index_a = source_to_baked_vertex[static_cast<size_t>(source_index_a)];
+						const int32_t baked_index_b = source_to_baked_vertex[static_cast<size_t>(source_index_b)];
+						const int32_t baked_index_c = source_to_baked_vertex[static_cast<size_t>(source_index_c)];
+						if (baked_index_a < 0 || baked_index_b < 0 || baked_index_c < 0) {
+							return;
+						}
+
+						indices.push_back(static_cast<uint32_t>(baked_index_a));
+						indices.push_back(static_cast<uint32_t>(baked_index_b));
+						indices.push_back(static_cast<uint32_t>(baked_index_c));
+					};
+					for (const auto& strip : stripGroup.strips) {
 						// Remember to flip the winding order
 						if (strip.flags & VTX::Strip::FLAG_IS_TRILIST) {
 							for (int i = 0; i < strip.indices.size(); i += 3) {
-								addIndex(strip.indices[ i ]);
-								addIndex(strip.indices[i+2]);
-								addIndex(strip.indices[i+1]);
+								append_triangle(strip.indices[i], strip.indices[i + 2], strip.indices[i + 1]);
 							}
 						} else {
-							for (auto i = strip.indices.size() - 1; i >= 2; i -= 3) {
-								addIndex(strip.indices[ i ]);
-								addIndex(strip.indices[i-2]);
-								addIndex(strip.indices[i-1]);
+							for (int i = static_cast<int>(strip.indices.size()) - 1; i >= 2; i -= 3) {
+								append_triangle(strip.indices[static_cast<size_t>(i)], strip.indices[static_cast<size_t>(i - 2)], strip.indices[static_cast<size_t>(i - 1)]);
 							}
 						}
 					}
 				}
 
-				model.meshes.push_back({std::move(indices), mdlMesh.material});
+				std::string material_name;
+				if (mdlMesh.material >= 0 && mdlMesh.material < static_cast<int32_t>(this->mdl.materials.size())) {
+					material_name = this->mdl.materials[static_cast<size_t>(mdlMesh.material)].name;
+				}
+				if (const VTX::MaterialReplacement *replacement = this->vtx.findMaterialReplacement(currentLOD, static_cast<int16_t>(mdlMesh.material)); replacement != nullptr && !replacement->replacementMaterialName.empty()) {
+					material_name = replacement->replacementMaterialName;
+				}
+
+				model.meshes.push_back({std::move(indices), mdlMesh.material, std::move(material_name)});
 			}
 		}
 	}

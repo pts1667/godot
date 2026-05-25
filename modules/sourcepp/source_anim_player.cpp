@@ -30,6 +30,13 @@ constexpr int STUDIO_AUTOPLAY = 0x0008;
 constexpr int STUDIO_DELTA = 0x0004;
 constexpr int STUDIO_LOCAL = 0x0200;
 constexpr int STUDIO_POST = 0x0010;
+constexpr int STUDIO_X = 0x00000001;
+constexpr int STUDIO_Y = 0x00000002;
+constexpr int STUDIO_Z = 0x00000004;
+constexpr int STUDIO_XR = 0x00000008;
+constexpr int STUDIO_YR = 0x00000010;
+constexpr int STUDIO_ZR = 0x00000020;
+constexpr int STUDIO_TYPES = 0x0003FFFF;
 
 constexpr int STUDIO_AL_POST = 0x0010;
 constexpr int STUDIO_AL_SPLINE = 0x0040;
@@ -39,6 +46,7 @@ constexpr int STUDIO_AL_LOCAL = 0x1000;
 constexpr int STUDIO_AL_POSE = 0x4000;
 
 constexpr int MAX_SEQUENCE_DEPTH = 16;
+constexpr int MAX_BONE_CONTROLLER_INPUTS = 5;
 
 Vector3 _to_vector3(const sourcepp::math::Vec3f &p_vector) {
 	return Vector3(p_vector[0], p_vector[1], p_vector[2]);
@@ -50,6 +58,30 @@ Quaternion _to_quaternion(const sourcepp::math::Quat &p_quaternion) {
 
 String _from_utf8(const std::string &p_string) {
 	return String::utf8(p_string.c_str());
+}
+
+String _get_bone_name(const mdlpp::StudioModel *p_model, int p_bone) {
+	if (p_model != nullptr && p_bone >= 0 && p_bone < static_cast<int>(p_model->mdl.bones.size())) {
+		return _from_utf8(p_model->mdl.bones[static_cast<size_t>(p_bone)].name);
+	}
+	return String();
+}
+
+float _get_rest_controller_value(const mdlpp::MDL::BoneController &p_controller) {
+	return CLAMP(static_cast<float>(p_controller.rest) / 255.0f, 0.0f, 1.0f);
+}
+
+Dictionary _make_bone_controller_info(const mdlpp::StudioModel *p_model, const mdlpp::MDL::BoneController &p_controller) {
+	Dictionary out;
+	out["bone"] = p_controller.bone;
+	out["bone_name"] = _get_bone_name(p_model, p_controller.bone);
+	out["type"] = p_controller.type;
+	out["start"] = p_controller.start;
+	out["end"] = p_controller.end;
+	out["rest"] = p_controller.rest;
+	out["rest_normalized"] = _get_rest_controller_value(p_controller);
+	out["input_field"] = p_controller.inputField;
+	return out;
 }
 
 String _resolve_anim_block_path(const String &p_model_path, const mdlpp::MDL::MDL &p_mdl) {
@@ -180,6 +212,45 @@ Transform3D _make_transform(const Vector3 &p_position, const Quaternion &p_rotat
 	return Transform3D(Basis(p_rotation), p_position);
 }
 
+float _encode_bone_controller_value(const mdlpp::MDL::BoneController &p_controller, float p_value, float *r_applied_value = nullptr) {
+	float value = p_value;
+	if ((p_controller.type & (STUDIO_XR | STUDIO_YR | STUDIO_ZR)) != 0) {
+		if (p_controller.end < p_controller.start) {
+			value = -value;
+		}
+
+		if (p_controller.start + 359.0f >= p_controller.end) {
+			const float midpoint = (p_controller.start + p_controller.end) * 0.5f;
+			if (value > midpoint + 180.0f) {
+				value -= 360.0f;
+			}
+			if (value < midpoint - 180.0f) {
+				value += 360.0f;
+			}
+		} else {
+			if (value > 360.0f) {
+				value -= Math::floor(value / 360.0f) * 360.0f;
+			} else if (value < 0.0f) {
+				value += Math::floor((-value / 360.0f) + 1.0f) * 360.0f;
+			}
+		}
+	}
+
+	const float denominator = p_controller.end - p_controller.start;
+	float encoded = Math::is_zero_approx(denominator) ? 0.0f : (value - p_controller.start) / denominator;
+	encoded = CLAMP(encoded, 0.0f, 1.0f);
+
+	if (r_applied_value != nullptr) {
+		float applied = ((1.0f - encoded) * p_controller.start) + (encoded * p_controller.end);
+		if ((p_controller.type & (STUDIO_XR | STUDIO_YR | STUDIO_ZR)) != 0 && p_controller.end < p_controller.start) {
+			applied *= -1.0f;
+		}
+		*r_applied_value = applied;
+	}
+
+	return encoded;
+}
+
 }
 
 SourceAnimPlayer::SourceAnimPlayer() = default;
@@ -226,6 +297,7 @@ Error SourceAnimPlayer::_open_bytes(const Vector<uint8_t> &p_mdl_data, const Vec
 
 	model = std::move(loaded);
 	sampled_animation_cache.clear();
+	_reset_controller_values();
 	_refresh_bone_map();
 	_rebuild_ik_runtime();
 	return OK;
@@ -405,6 +477,85 @@ void SourceAnimPlayer::_reset_mapped_bone_poses() {
 void SourceAnimPlayer::_set_processing_enabled(bool p_enabled) {
 	set_process(p_enabled);
 	set_physics_process(false);
+}
+
+const mdlpp::MDL::BoneController *SourceAnimPlayer::_find_bone_controller(int p_input_field) const {
+	if (model == nullptr) {
+		return nullptr;
+	}
+	for (const mdlpp::MDL::BoneController &controller : model->mdl.boneControllers) {
+		if (controller.inputField == p_input_field) {
+			return &controller;
+		}
+	}
+	return nullptr;
+}
+
+void SourceAnimPlayer::_reset_controller_values() {
+	controller_values.resize(MAX_BONE_CONTROLLER_INPUTS);
+	for (int i = 0; i < controller_values.size(); i++) {
+		controller_values.set(i, 0.0f);
+	}
+	if (model == nullptr) {
+		return;
+	}
+	for (const mdlpp::MDL::BoneController &controller : model->mdl.boneControllers) {
+		if (controller.inputField < 0 || controller.inputField >= controller_values.size()) {
+			continue;
+		}
+		controller_values.set(controller.inputField, _get_rest_controller_value(controller));
+	}
+}
+
+void SourceAnimPlayer::_apply_bone_controllers(PoseBuffer &r_pose) const {
+	if (model == nullptr || controller_values.is_empty()) {
+		return;
+	}
+
+	for (const mdlpp::MDL::BoneController &controller : model->mdl.boneControllers) {
+		const int bone = controller.bone;
+		if (bone < 0 || bone >= r_pose.positions.size()) {
+			continue;
+		}
+
+		float encoded_value = _get_rest_controller_value(controller);
+		if (controller.inputField >= 0 && controller.inputField < controller_values.size()) {
+			encoded_value = CLAMP(controller_values[controller.inputField], 0.0f, 1.0f);
+		}
+		const float value = ((1.0f - encoded_value) * controller.start) + (encoded_value * controller.end);
+
+		switch (controller.type & STUDIO_TYPES) {
+			case STUDIO_XR: {
+				const Quaternion adjustment(Vector3(1.0f, 0.0f, 0.0f), Math::deg_to_rad(value));
+				r_pose.rotations.write[bone] = (adjustment * r_pose.rotations[bone]).normalized();
+			} break;
+			case STUDIO_YR: {
+				const Quaternion adjustment(Vector3(0.0f, 1.0f, 0.0f), Math::deg_to_rad(value));
+				r_pose.rotations.write[bone] = (adjustment * r_pose.rotations[bone]).normalized();
+			} break;
+			case STUDIO_ZR: {
+				const Quaternion adjustment(Vector3(0.0f, 0.0f, 1.0f), Math::deg_to_rad(value));
+				r_pose.rotations.write[bone] = (adjustment * r_pose.rotations[bone]).normalized();
+			} break;
+			case STUDIO_X: {
+				Vector3 position = r_pose.positions[bone];
+				position.x += value;
+				r_pose.positions.write[bone] = position;
+			} break;
+			case STUDIO_Y: {
+				Vector3 position = r_pose.positions[bone];
+				position.y += value;
+				r_pose.positions.write[bone] = position;
+			} break;
+			case STUDIO_Z: {
+				Vector3 position = r_pose.positions[bone];
+				position.z += value;
+				r_pose.positions.write[bone] = position;
+			} break;
+			default:
+				break;
+		}
+	}
 }
 
 void SourceAnimPlayer::_initialize_pose_buffer(PoseBuffer &r_pose, bool p_delta) const {
@@ -963,6 +1114,7 @@ void SourceAnimPlayer::_apply_pose() {
 		return;
 	}
 	_accumulate_autoplay_sequences(final_pose, &pending_locks);
+	_apply_bone_controllers(final_pose);
 
 	for (int bone_index = 0; bone_index < model_to_skeleton_bones.size(); bone_index++) {
 		const int skeleton_bone = model_to_skeleton_bones[bone_index];
@@ -1019,6 +1171,57 @@ void SourceAnimPlayer::set_blend_values(const Vector2 &p_blend_values) {
 
 Vector2 SourceAnimPlayer::get_blend_values() const {
 	return blend_values;
+}
+
+void SourceAnimPlayer::set_controller_values(const PackedFloat32Array &p_controller_values) {
+	_reset_controller_values();
+	for (int i = 0; i < MIN(controller_values.size(), p_controller_values.size()); i++) {
+		controller_values.set(i, CLAMP(p_controller_values[i], 0.0f, 1.0f));
+	}
+	if (model != nullptr && sequence_descriptor >= 0) {
+		_apply_pose();
+	}
+}
+
+PackedFloat32Array SourceAnimPlayer::get_controller_values() const {
+	return controller_values;
+}
+
+void SourceAnimPlayer::set_controller_value(int p_input_field, float p_value) {
+	ERR_FAIL_COND_MSG(p_input_field < 0 || p_input_field >= MAX_BONE_CONTROLLER_INPUTS, "Bone controller input field is out of range.");
+	if (controller_values.size() < MAX_BONE_CONTROLLER_INPUTS) {
+		controller_values.resize(MAX_BONE_CONTROLLER_INPUTS);
+	}
+	controller_values.set(p_input_field, CLAMP(p_value, 0.0f, 1.0f));
+	if (model != nullptr && sequence_descriptor >= 0) {
+		_apply_pose();
+	}
+}
+
+float SourceAnimPlayer::get_controller_value(int p_input_field) const {
+	ERR_FAIL_COND_V_MSG(p_input_field < 0 || p_input_field >= MAX_BONE_CONTROLLER_INPUTS, 0.0f, "Bone controller input field is out of range.");
+	if (p_input_field >= controller_values.size()) {
+		return 0.0f;
+	}
+	return controller_values[p_input_field];
+}
+
+float SourceAnimPlayer::set_controller_ranged_value(int p_input_field, float p_value) {
+	ERR_FAIL_COND_V_MSG(p_input_field < 0 || p_input_field >= MAX_BONE_CONTROLLER_INPUTS, p_value, "Bone controller input field is out of range.");
+	const mdlpp::MDL::BoneController *controller = _find_bone_controller(p_input_field);
+	ERR_FAIL_NULL_V_MSG(controller, p_value, "Requested bone controller input field was not found in the loaded MDL.");
+
+	float applied_value = p_value;
+	set_controller_value(p_input_field, _encode_bone_controller_value(*controller, p_value, &applied_value));
+	return applied_value;
+}
+
+float SourceAnimPlayer::get_controller_ranged_value(int p_input_field) const {
+	ERR_FAIL_COND_V_MSG(p_input_field < 0 || p_input_field >= MAX_BONE_CONTROLLER_INPUTS, 0.0f, "Bone controller input field is out of range.");
+	const mdlpp::MDL::BoneController *controller = _find_bone_controller(p_input_field);
+	ERR_FAIL_NULL_V_MSG(controller, 0.0f, "Requested bone controller input field was not found in the loaded MDL.");
+	const float encoded = get_controller_value(p_input_field);
+	return ((1.0f - encoded) * controller->start) + (encoded * controller->end);
 }
 
 void SourceAnimPlayer::set_ik_enabled(bool p_enabled) {
@@ -1141,6 +1344,7 @@ void SourceAnimPlayer::close() {
 	mdl_path = String();
 	vtx_path = String();
 	vvd_path = String();
+	controller_values = PackedFloat32Array();
 	sequence_descriptor = -1;
 	playback_time = 0.0;
 	model_to_skeleton_bones.clear();
@@ -1161,6 +1365,27 @@ String SourceAnimPlayer::get_vtx_path() const {
 
 String SourceAnimPlayer::get_vvd_path() const {
 	return vvd_path;
+}
+
+int SourceAnimPlayer::get_bone_controller_count() const {
+	return model == nullptr ? 0 : static_cast<int>(model->mdl.boneControllers.size());
+}
+
+Array SourceAnimPlayer::get_bone_controllers() const {
+	Array out;
+	if (model == nullptr) {
+		return out;
+	}
+	for (const mdlpp::MDL::BoneController &controller : model->mdl.boneControllers) {
+		Dictionary info = _make_bone_controller_info(model.get(), controller);
+		if (controller.inputField >= 0 && controller.inputField < controller_values.size()) {
+			const float encoded = controller_values[controller.inputField];
+			info["current_normalized"] = encoded;
+			info["current_value"] = ((1.0f - encoded) * controller.start) + (encoded * controller.end);
+		}
+		out.push_back(info);
+	}
+	return out;
 }
 
 int SourceAnimPlayer::get_sequence_count() const {
@@ -1301,12 +1526,20 @@ void SourceAnimPlayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_mdl_path"), &SourceAnimPlayer::get_mdl_path);
 	ClassDB::bind_method(D_METHOD("get_vtx_path"), &SourceAnimPlayer::get_vtx_path);
 	ClassDB::bind_method(D_METHOD("get_vvd_path"), &SourceAnimPlayer::get_vvd_path);
+	ClassDB::bind_method(D_METHOD("get_bone_controller_count"), &SourceAnimPlayer::get_bone_controller_count);
+	ClassDB::bind_method(D_METHOD("get_bone_controllers"), &SourceAnimPlayer::get_bone_controllers);
 	ClassDB::bind_method(D_METHOD("set_skeleton_path", "skeleton_path"), &SourceAnimPlayer::set_skeleton_path);
 	ClassDB::bind_method(D_METHOD("get_skeleton_path"), &SourceAnimPlayer::get_skeleton_path);
 	ClassDB::bind_method(D_METHOD("set_sequence_descriptor", "sequence_descriptor"), &SourceAnimPlayer::set_sequence_descriptor);
 	ClassDB::bind_method(D_METHOD("get_sequence_descriptor"), &SourceAnimPlayer::get_sequence_descriptor);
 	ClassDB::bind_method(D_METHOD("set_blend_values", "blend_values"), &SourceAnimPlayer::set_blend_values);
 	ClassDB::bind_method(D_METHOD("get_blend_values"), &SourceAnimPlayer::get_blend_values);
+	ClassDB::bind_method(D_METHOD("set_controller_values", "controller_values"), &SourceAnimPlayer::set_controller_values);
+	ClassDB::bind_method(D_METHOD("get_controller_values"), &SourceAnimPlayer::get_controller_values);
+	ClassDB::bind_method(D_METHOD("set_controller_value", "input_field", "value"), &SourceAnimPlayer::set_controller_value);
+	ClassDB::bind_method(D_METHOD("get_controller_value", "input_field"), &SourceAnimPlayer::get_controller_value);
+	ClassDB::bind_method(D_METHOD("set_controller_ranged_value", "input_field", "value"), &SourceAnimPlayer::set_controller_ranged_value);
+	ClassDB::bind_method(D_METHOD("get_controller_ranged_value", "input_field"), &SourceAnimPlayer::get_controller_ranged_value);
 	ClassDB::bind_method(D_METHOD("set_ik_enabled", "enabled"), &SourceAnimPlayer::set_ik_enabled);
 	ClassDB::bind_method(D_METHOD("is_ik_enabled"), &SourceAnimPlayer::is_ik_enabled);
 	ClassDB::bind_method(D_METHOD("set_speed_scale", "speed_scale"), &SourceAnimPlayer::set_speed_scale);
@@ -1328,6 +1561,7 @@ void SourceAnimPlayer::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "skeleton_path", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Skeleton3D"), "set_skeleton_path", "get_skeleton_path");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "sequence_descriptor"), "set_sequence_descriptor", "get_sequence_descriptor");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "blend_values"), "set_blend_values", "get_blend_values");
+	ADD_PROPERTY(PropertyInfo(Variant::PACKED_FLOAT32_ARRAY, "controller_values"), "set_controller_values", "get_controller_values");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ik_enabled"), "set_ik_enabled", "is_ik_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "speed_scale", PROPERTY_HINT_RANGE, "0,32,0.01,or_greater"), "set_speed_scale", "get_speed_scale");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "current_time", PROPERTY_HINT_RANGE, "0,3600,0.001,or_greater,suffix:s"), "set_current_time", "get_current_time");

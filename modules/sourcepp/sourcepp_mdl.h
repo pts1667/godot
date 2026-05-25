@@ -11,6 +11,7 @@
 #include "core/error/error_list.h"
 #include "core/io/file_access.h"
 #include "core/object/ref_counted.h"
+#include "scene/resources/3d/skin.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/mesh.h"
 
@@ -23,6 +24,8 @@ namespace mdlpp {
 struct BakedModel;
 struct StudioModel;
 }
+
+class Skeleton3D;
 
 class SourcePPMDL : public RefCounted {
 	GDCLASS(SourcePPMDL, RefCounted);
@@ -66,6 +69,9 @@ public:
 	PackedStringArray get_material_directories() const;
 	Array get_skin_families() const;
 	PackedStringArray get_bone_names() const;
+	Array get_skeleton_bones() const;
+	int get_bone_controller_count() const;
+	Array get_bone_controllers() const;
 	PackedStringArray get_body_parts() const;
 	int get_attachment_count() const;
 	Array get_attachments() const;
@@ -84,4 +90,6 @@ public:
 	PackedInt32Array get_surface_material_indices(int p_lod = 0) const;
 	PackedStringArray get_surface_materials(int p_lod = 0) const;
 	Ref<ArrayMesh> create_mesh(int p_lod = 0) const;
+	Ref<Skin> create_skin() const;
+	Skeleton3D *create_skeleton() const;
 };

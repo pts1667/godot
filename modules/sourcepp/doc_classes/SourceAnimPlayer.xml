@@ -6,8 +6,9 @@
 	<description>
 		[SourceAnimPlayer] is a runtime-focused companion to [SourcePPMDL]. It loads an MDL, resolves the required VTX and VVD companions, samples Source animation data, evaluates sequence blend grids, and writes the resulting local bone poses onto a target [Skeleton3D].
 		The node can target a [Skeleton3D] through [member skeleton_path] or by being parented under one directly. It evaluates parsed sequence autolayers, model autoplay sequences, autoplay IK locks, and local hierarchy overrides so more of Source's sequence dependency graph can run at runtime instead of being baked into a Godot [Animation].
+		Parsed Source bone controllers are also applied as a post-sample local pose adjustment using [member controller_values], and [method set_controller_ranged_value] can encode user-friendly ranged controller input through the same normalization rules used by the Source SDK.
 		When [member ik_enabled] is [code]true[/code], parsed Source [code]ikchain[/code] and sequence [code]iklock[/code] data are applied as a post-pass using internal Godot IK modifier nodes under the target skeleton. This preserves locked end-effectors and bend direction more faithfully than the base sampled animation alone.
-		Disk-based loads resolve companion external animation blocks automatically when the model references them, and [method open_from_buffer] can accept the same [code].ani[/code] blob explicitly. Pose-parameter-driven autolayers are currently driven from [member blend_values], so more exotic Source control setups such as bone controllers still need follow-up work.
+		Disk-based loads resolve companion external animation blocks automatically when the model references them, and [method open_from_buffer] can accept the same [code].ani[/code] blob explicitly. Pose-parameter-driven autolayers are currently driven from [member blend_values], so more exotic Source control setups beyond direct controller inputs still need follow-up work.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -36,6 +37,32 @@
 			<return type="String" />
 			<description>
 				Returns the last opened MDL path, or an empty string if the model was loaded from memory.
+			</description>
+		</method>
+		<method name="get_bone_controller_count">
+			<return type="int" />
+			<description>
+				Returns the number of parsed bone controller definitions.
+			</description>
+		</method>
+		<method name="get_bone_controllers">
+			<return type="Array" />
+			<description>
+				Returns parsed bone controller dictionaries. Each entry contains [code]bone[/code], [code]bone_name[/code], [code]type[/code], [code]start[/code], [code]end[/code], [code]rest[/code], [code]rest_normalized[/code], [code]input_field[/code], and when a controller slot is present, [code]current_normalized[/code] and [code]current_value[/code].
+			</description>
+		</method>
+		<method name="get_controller_value">
+			<return type="float" />
+			<param index="0" name="input_field" type="int" />
+			<description>
+				Returns the normalized [code]0..1[/code] value for the requested controller input field.
+			</description>
+		</method>
+		<method name="get_controller_ranged_value">
+			<return type="float" />
+			<param index="0" name="input_field" type="int" />
+			<description>
+				Returns the current ranged value for the requested controller input field using the first parsed controller definition bound to that slot.
 			</description>
 		</method>
 		<method name="get_sequence_count">
@@ -123,6 +150,22 @@
 				Finds a sequence by label and starts playback from [param from_time] seconds.
 			</description>
 		</method>
+		<method name="set_controller_ranged_value">
+			<return type="float" />
+			<param index="0" name="input_field" type="int" />
+			<param index="1" name="value" type="float" />
+			<description>
+				Converts [param value] from the controller's authored range into Source's normalized controller slot encoding, stores it, reapplies the pose, and returns the clamped ranged value that was actually stored.
+			</description>
+		</method>
+		<method name="set_controller_value">
+			<return type="void" />
+			<param index="0" name="input_field" type="int" />
+			<param index="1" name="value" type="float" />
+			<description>
+				Sets the normalized [code]0..1[/code] value for the requested controller input field and reapplies the pose immediately.
+			</description>
+		</method>
 		<method name="seek">
 			<return type="void" />
 			<param index="0" name="time" type="float" />
@@ -142,6 +185,9 @@
 	<members>
 		<member name="blend_values" type="Vector2" setter="set_blend_values" getter="get_blend_values" default="Vector2(0, 0)">
 			Blend values used for sequence grid selection and the first layer of pose-parameter-driven autolayers.
+		</member>
+		<member name="controller_values" type="PackedFloat32Array" setter="set_controller_values" getter="get_controller_values" default="PackedFloat32Array()">
+			Normalized Source bone controller input values. Slots follow Source's controller input fields, where the common user-driven fields are [code]0[/code] through [code]3[/code].
 		</member>
 		<member name="current_time" type="float" setter="set_current_time" getter="get_current_time" default="0.0">
 			Current playback time in seconds.
