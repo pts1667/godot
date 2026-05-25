@@ -13,6 +13,7 @@
 #include "core/object/ref_counted.h"
 #include "scene/resources/3d/skin.h"
 #include "scene/resources/animation.h"
+#include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 
 #include <cstddef>
@@ -26,6 +27,7 @@ struct StudioModel;
 }
 
 class Skeleton3D;
+class Node3D;
 class SourcePPResolver;
 
 class SourcePPMDL : public RefCounted {
@@ -37,13 +39,20 @@ class SourcePPMDL : public RefCounted {
 	String mdl_path;
 	String vtx_path;
 	String vvd_path;
+	Vector<uint8_t> mdl_data_cache;
+	Vector<uint8_t> vtx_data_cache;
+	Vector<uint8_t> vvd_data_cache;
+	Vector<uint8_t> anim_block_data_cache;
 
 	static void _bind_methods();
 
 	static std::string _to_utf8(const String &p_string);
 	static String _from_utf8(const std::string &p_string);
+	static PackedByteArray _to_packed_byte_array(const Vector<uint8_t> &p_data);
 	static std::vector<std::byte> _to_byte_vector(const Vector<uint8_t> &p_data);
 	String _resolve_companion_path(const String &p_model_path, const PackedStringArray &p_candidates) const;
+	String _resolve_material_path(const String &p_material_name) const;
+	Ref<Material> _create_import_material(int p_material_index, int p_skin_family) const;
 	Vector<uint8_t> _read_file_bytes(const String &p_path, Error *r_error) const;
 
 	Error _open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<uint8_t> &p_vtx_data, const Vector<uint8_t> &p_vvd_data, const Vector<uint8_t> &p_anim_block_data = Vector<uint8_t>());
@@ -101,4 +110,5 @@ public:
 	Ref<ArrayMesh> create_mesh(int p_lod = 0) const;
 	Ref<Skin> create_skin() const;
 	Skeleton3D *create_skeleton() const;
+	Node3D *create_model_node(int p_skin_family = 0, bool p_include_attachments = true) const;
 };

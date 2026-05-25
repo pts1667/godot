@@ -8,12 +8,18 @@
 
 #include "sourcepp_mdl.h"
 
+#include "source_anim_player.h"
 #include "sourcepp_resolver.h"
+#include "sourcepp_vmt.h"
 
 #include "core/error/error_macros.h"
 #include "core/math/transform_3d.h"
 #include "core/object/class_db.h"
+#include "scene/3d/bone_attachment_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/node_3d.h"
 #include "scene/3d/skeleton_3d.h"
+#include "scene/resources/material.h"
 
 #include <mdlpp/mdlpp.h>
 
@@ -156,6 +162,47 @@ NodePath _make_bone_track_path(const NodePath &p_skeleton_path, const String &p_
 	return NodePath(skeleton_path + ":" + p_bone_name);
 }
 
+String _normalize_source_path(const String &p_path) {
+	return p_path.replace("\\", "/").strip_edges();
+}
+
+String _ensure_extension(const String &p_path, const String &p_extension) {
+	return p_path.to_lower().ends_with(p_extension) ? p_path : p_path + p_extension;
+}
+
+String _strip_prefix(const String &p_value, const String &p_prefix) {
+	return p_value.begins_with(p_prefix) ? p_value.substr(p_prefix.length()) : p_value;
+}
+
+String _strip_material_extension(const String &p_value) {
+	return p_value.to_lower().ends_with(".vmt") ? p_value.substr(0, p_value.length() - 4) : p_value;
+}
+
+void _append_unique_candidate(Vector<String> &r_candidates, const String &p_candidate) {
+	const String normalized = _normalize_source_path(p_candidate);
+	if (normalized.is_empty()) {
+		return;
+	}
+	for (int i = 0; i < r_candidates.size(); i++) {
+		if (r_candidates[i] == normalized) {
+			return;
+		}
+	}
+	r_candidates.push_back(normalized);
+}
+
+String _build_scene_name(const String &p_name, const String &p_path) {
+	String scene_name = p_name;
+	if (scene_name.is_empty() && !p_path.is_empty()) {
+		scene_name = p_path.get_file().get_basename();
+	}
+	if (scene_name.is_empty()) {
+		scene_name = "SourcePPMDL";
+	}
+	scene_name = scene_name.validate_node_name();
+	return scene_name.is_empty() ? String("SourcePPMDL") : scene_name;
+}
+
 }
 
 SourcePPMDL::SourcePPMDL() = default;
@@ -169,6 +216,15 @@ std::string SourcePPMDL::_to_utf8(const String &p_string) {
 
 String SourcePPMDL::_from_utf8(const std::string &p_string) {
 	return String::utf8(p_string.c_str());
+}
+
+PackedByteArray SourcePPMDL::_to_packed_byte_array(const Vector<uint8_t> &p_data) {
+	PackedByteArray out;
+	out.resize(p_data.size());
+	if (!p_data.is_empty()) {
+		std::memcpy(out.ptrw(), p_data.ptr(), static_cast<size_t>(p_data.size()));
+	}
+	return out;
 }
 
 std::vector<std::byte> SourcePPMDL::_to_byte_vector(const Vector<uint8_t> &p_data) {
@@ -189,6 +245,94 @@ String SourcePPMDL::_resolve_companion_path(const String &p_model_path, const Pa
 		}
 	}
 	return String();
+}
+
+String SourcePPMDL::_resolve_material_path(const String &p_material_name) const {
+	ERR_FAIL_COND_V_MSG(get_model() == nullptr, String(), "SourcePPMDL must be opened before use.");
+
+	const String normalized_material = _normalize_source_path(p_material_name);
+	if (normalized_material.is_empty()) {
+		return String();
+	}
+
+	const String material_without_prefix = _strip_prefix(normalized_material, "materials/");
+	const String material_base = _strip_material_extension(material_without_prefix);
+	Vector<String> candidates;
+	_append_unique_candidate(candidates, _ensure_extension(material_without_prefix, ".vmt"));
+	_append_unique_candidate(candidates, "materials/" + _ensure_extension(material_without_prefix, ".vmt"));
+
+	for (const std::string &directory_raw : get_model()->mdl.materialDirectories) {
+		String directory = _normalize_source_path(_from_utf8(directory_raw));
+		if (directory.ends_with("/")) {
+			directory = directory.substr(0, directory.length() - 1);
+		}
+		directory = _strip_prefix(directory, "materials/");
+		if (directory.is_empty()) {
+			continue;
+		}
+		_append_unique_candidate(candidates, directory.path_join(_ensure_extension(material_base, ".vmt")));
+		_append_unique_candidate(candidates, String("materials/") + directory.path_join(_ensure_extension(material_base, ".vmt")));
+	}
+
+	const String normalized_mdl_path = _normalize_source_path(mdl_path);
+	const int models_index = normalized_mdl_path.find("/models/") >= 0 ? normalized_mdl_path.find("/models/") : (normalized_mdl_path.begins_with("models/") ? 0 : -1);
+	const String game_root = models_index > 0 ? normalized_mdl_path.substr(0, models_index) : String();
+
+	for (int candidate_index = 0; candidate_index < candidates.size(); candidate_index++) {
+		const String &candidate = candidates[candidate_index];
+		if (_path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
+			return candidate;
+		}
+		if (!game_root.is_empty()) {
+			const String absolute_candidate = game_root.path_join(candidate);
+			if (_path_exists_with_resolver(absolute_candidate, resolver, resolver_game_id)) {
+				return absolute_candidate;
+			}
+		}
+	}
+
+	return String();
+}
+
+Ref<Material> SourcePPMDL::_create_import_material(int p_material_index, int p_skin_family) const {
+	ERR_FAIL_COND_V_MSG(get_model() == nullptr, Ref<Material>(), "SourcePPMDL must be opened before use.");
+
+	int resolved_material_index = p_material_index;
+	if (!get_model()->mdl.skins.empty() && p_skin_family >= 0 && p_skin_family < static_cast<int>(get_model()->mdl.skins.size())) {
+		const std::vector<int16_t> &skin_family = get_model()->mdl.skins[static_cast<size_t>(p_skin_family)];
+		if (resolved_material_index >= 0 && resolved_material_index < static_cast<int>(skin_family.size())) {
+			resolved_material_index = skin_family[static_cast<size_t>(resolved_material_index)];
+		}
+	}
+
+	String material_name;
+	if (resolved_material_index >= 0 && resolved_material_index < static_cast<int>(get_model()->mdl.materials.size())) {
+		material_name = _from_utf8(get_model()->mdl.materials[static_cast<size_t>(resolved_material_index)].name);
+	}
+
+	const String material_path = _resolve_material_path(material_name);
+	Ref<Material> material;
+	if (!material_path.is_empty()) {
+		Ref<SourcePPVMT> vmt;
+		vmt.instantiate();
+		vmt->set_resolver(resolver);
+		vmt->set_resolver_game_id(resolver_game_id);
+		if (vmt->open(material_path) == OK) {
+			material = vmt->create_material();
+		}
+	}
+
+	if (material.is_null()) {
+		Ref<StandardMaterial3D> placeholder;
+		placeholder.instantiate();
+		material = placeholder;
+	}
+
+	material->set_meta("sourcepp_mdl_material_index", resolved_material_index);
+	material->set_meta("sourcepp_mdl_skin_family", p_skin_family);
+	material->set_meta("sourcepp_mdl_material_name", material_name);
+	material->set_meta("sourcepp_mdl_material_path", material_path);
+	return material;
 }
 
 Vector<uint8_t> SourcePPMDL::_read_file_bytes(const String &p_path, Error *r_error) const {
@@ -301,8 +445,14 @@ Error SourcePPMDL::open(const String &p_mdl_path, const String &p_vtx_path, cons
 			return anim_block_error;
 		}
 		model->setAnimBlockData(_to_byte_vector(anim_block_data));
+		anim_block_data_cache = anim_block_data;
+	} else {
+		anim_block_data_cache.clear();
 	}
 
+	mdl_data_cache = mdl_data;
+	vtx_data_cache = vtx_data;
+	vvd_data_cache = vvd_data;
 	mdl_path = p_mdl_path;
 	vtx_path = resolved_vtx_path;
 	vvd_path = resolved_vvd_path;
@@ -321,6 +471,10 @@ Error SourcePPMDL::open_from_buffer(const PackedByteArray &p_mdl_data, const Pac
 		return open_error;
 	}
 
+	mdl_data_cache = p_mdl_data;
+	vtx_data_cache = p_vtx_data;
+	vvd_data_cache = p_vvd_data;
+	anim_block_data_cache = p_anim_block_data;
 	return OK;
 }
 
@@ -329,6 +483,10 @@ void SourcePPMDL::close() {
 	mdl_path = String();
 	vtx_path = String();
 	vvd_path = String();
+	mdl_data_cache.clear();
+	vtx_data_cache.clear();
+	vvd_data_cache.clear();
+	anim_block_data_cache.clear();
 }
 
 bool SourcePPMDL::is_open() const {
@@ -910,6 +1068,106 @@ Skeleton3D *SourcePPMDL::create_skeleton() const {
 	return skeleton;
 }
 
+Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachments) const {
+	ERR_FAIL_COND_V_MSG(get_model() == nullptr, nullptr, "SourcePPMDL must be opened before use.");
+	ERR_FAIL_COND_V_MSG(p_skin_family < 0, nullptr, "Skin family must be non-negative.");
+	ERR_FAIL_COND_V_MSG(!get_model()->mdl.skins.empty() && p_skin_family >= static_cast<int>(get_model()->mdl.skins.size()), nullptr, "Requested skin family is out of range.");
+
+	Ref<Skin> skin = create_skin();
+	ERR_FAIL_COND_V_MSG(skin.is_null(), nullptr, "Failed to create the imported skin.");
+
+	Skeleton3D *skeleton = create_skeleton();
+	ERR_FAIL_NULL_V_MSG(skeleton, nullptr, "Failed to create the imported skeleton.");
+	skeleton->set_name("Skeleton3D");
+
+	SourceAnimPlayer *anim_player = memnew(SourceAnimPlayer);
+	anim_player->set_name("SourceAnimPlayer");
+	anim_player->set_resolver(resolver);
+	anim_player->set_resolver_game_id(resolver_game_id);
+	anim_player->set("skeleton_path", NodePath("../Skeleton3D"));
+	const Error anim_open_error = anim_player->open_from_buffer(_to_packed_byte_array(mdl_data_cache), _to_packed_byte_array(vtx_data_cache), _to_packed_byte_array(vvd_data_cache), _to_packed_byte_array(anim_block_data_cache));
+	if (anim_open_error != OK) {
+		memdelete(anim_player);
+		memdelete(skeleton);
+		ERR_FAIL_V_MSG(nullptr, "Failed to initialize SourceAnimPlayer for the imported model.");
+	}
+	if (anim_player->get_sequence_count() > 0) {
+		anim_player->set("sequence_descriptor", 0);
+	}
+
+	Node3D *root = memnew(Node3D);
+	root->set_name(_build_scene_name(get_name(), mdl_path));
+
+	const int lod_count = MAX(get_lod_count(), 1);
+	float visibility_step = 20.0f;
+	float visibility_margin = 2.0f;
+
+	for (int lod_index = 0; lod_index < lod_count; lod_index++) {
+		Ref<ArrayMesh> mesh = create_mesh(lod_index);
+		ERR_FAIL_COND_V_MSG(mesh.is_null(), nullptr, "Failed to create one of the imported LOD meshes.");
+
+		if (lod_index == 0) {
+			const AABB mesh_aabb = mesh->get_aabb();
+			const float size_metric = MAX(MAX(mesh_aabb.size.x, mesh_aabb.size.y), mesh_aabb.size.z);
+			visibility_step = MAX(size_metric * 8.0f, 20.0f);
+			visibility_margin = MAX(visibility_step * 0.15f, 2.0f);
+		}
+
+		MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+		mesh_instance->set_name(vformat("MeshInstance3D_LOD%d", lod_index));
+		mesh_instance->set_mesh(mesh);
+		mesh_instance->set_skin(skin);
+		mesh_instance->set_skeleton_path(NodePath("../Skeleton3D"));
+		mesh_instance->set_meta("sourcepp_mdl_lod", lod_index);
+
+		const PackedInt32Array surface_material_indices = get_surface_material_indices(lod_index);
+		for (int surface_index = 0; surface_index < mesh->get_surface_count() && surface_index < surface_material_indices.size(); surface_index++) {
+			mesh_instance->set_surface_override_material(surface_index, _create_import_material(surface_material_indices[surface_index], p_skin_family));
+		}
+
+		if (lod_count > 1) {
+			const float range_begin = lod_index == 0 ? 0.0f : visibility_step * static_cast<float>(lod_index);
+			const float range_end = lod_index + 1 < lod_count ? visibility_step * static_cast<float>(lod_index + 1) : 0.0f;
+			mesh_instance->set_visibility_range_begin(range_begin);
+			mesh_instance->set_visibility_range_end(range_end);
+			mesh_instance->set_visibility_range_begin_margin(lod_index == 0 ? 0.0f : visibility_margin);
+			mesh_instance->set_visibility_range_end_margin(lod_index + 1 < lod_count ? visibility_margin : 0.0f);
+			mesh_instance->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_DISABLED);
+		}
+
+		root->add_child(mesh_instance);
+	}
+
+	if (p_include_attachments) {
+		for (int attachment_index = 0; attachment_index < static_cast<int>(get_model()->mdl.attachments.size()); attachment_index++) {
+			const mdlpp::MDL::Attachment &attachment = get_model()->mdl.attachments[static_cast<size_t>(attachment_index)];
+			BoneAttachment3D *attachment_node = memnew(BoneAttachment3D);
+			String attachment_name = _from_utf8(attachment.name);
+			if (attachment_name.is_empty()) {
+				attachment_name = vformat("Attachment_%d", attachment_index);
+			}
+			attachment_node->set_name(attachment_name.validate_node_name());
+			attachment_node->set_bone_idx(attachment.bone);
+			attachment_node->set_bone_name(_get_bone_track_name(get_model(), attachment.bone));
+			attachment_node->set_transform(_to_transform_3d(attachment.local));
+			skeleton->add_child(attachment_node);
+		}
+	}
+
+	root->add_child(skeleton);
+	root->add_child(anim_player);
+	root->set_meta("sourcepp_mdl_skin_family", p_skin_family);
+	root->set_meta("sourcepp_mdl_lod_count", lod_count);
+	root->set_meta("sourcepp_mdl_visibility_range_step", visibility_step);
+	root->set_meta("sourcepp_mdl_visibility_range_margin", visibility_margin);
+	root->set_meta("sourcepp_mdl_path", mdl_path);
+	root->set_meta("sourcepp_vtx_path", vtx_path);
+	root->set_meta("sourcepp_vvd_path", vvd_path);
+	root->set_meta("sourcepp_materials", get_materials());
+	root->set_meta("sourcepp_sequences", anim_player->get_sequence_names());
+	return root;
+}
+
 void SourcePPMDL::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_resolver", "resolver"), &SourcePPMDL::set_resolver);
 	ClassDB::bind_method(D_METHOD("get_resolver"), &SourcePPMDL::get_resolver);
@@ -955,6 +1213,7 @@ void SourcePPMDL::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("create_mesh", "lod"), &SourcePPMDL::create_mesh, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("create_skin"), &SourcePPMDL::create_skin);
 	ClassDB::bind_method(D_METHOD("create_skeleton"), &SourcePPMDL::create_skeleton);
+	ClassDB::bind_method(D_METHOD("create_model_node", "skin_family", "include_attachments"), &SourcePPMDL::create_model_node, DEFVAL(0), DEFVAL(true));
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "resolver", PROPERTY_HINT_RESOURCE_TYPE, "SourcePPResolver"), "set_resolver", "get_resolver");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "resolver_game_id"), "set_resolver_game_id", "get_resolver_game_id");
