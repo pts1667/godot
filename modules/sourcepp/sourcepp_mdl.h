@@ -110,5 +110,5 @@ public:
 	Ref<ArrayMesh> create_mesh(int p_lod = 0) const;
 	Ref<Skin> create_skin() const;
 	Skeleton3D *create_skeleton() const;
-	Node3D *create_model_node(int p_skin_family = 0, bool p_include_attachments = true) const;
+	Node3D *create_model_node(int p_skin_family = 0, bool p_include_attachments = true, bool p_include_collision = true) const;
 };

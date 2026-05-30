@@ -403,7 +403,11 @@ int SourcePPVTF::get_format() const {
 	return static_cast<int>(get_texture()->getFormat());
 }
 
-void SourcePPVTF::set_format(int p_format, float p_quality) {
+void SourcePPVTF::set_format(int p_format) {
+	set_format_with_quality(p_format, -1.0f);
+}
+
+void SourcePPVTF::set_format_with_quality(int p_format, float p_quality) {
 	ERR_FAIL_COND_MSG(get_texture() == nullptr, "SourcePPVTF must be opened before use.");
 	get_texture()->setFormat(static_cast<vtfpp::ImageFormat>(p_format), {}, p_quality);
 }
@@ -483,7 +487,8 @@ void SourcePPVTF::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_face_count"), &SourcePPVTF::get_face_count);
 
 	ClassDB::bind_method(D_METHOD("get_format"), &SourcePPVTF::get_format);
-	ClassDB::bind_method(D_METHOD("set_format", "format", "quality"), &SourcePPVTF::set_format, DEFVAL(-1.0f));
+	ClassDB::bind_method(D_METHOD("set_format", "format"), &SourcePPVTF::set_format);
+	ClassDB::bind_method(D_METHOD("set_format_with_quality", "format", "quality"), &SourcePPVTF::set_format_with_quality, DEFVAL(-1.0f));
 	ClassDB::bind_method(D_METHOD("get_version"), &SourcePPVTF::get_version);
 	ClassDB::bind_method(D_METHOD("set_version", "version"), &SourcePPVTF::set_version);
 	ClassDB::bind_method(D_METHOD("get_flags"), &SourcePPVTF::get_flags);

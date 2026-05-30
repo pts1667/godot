@@ -124,7 +124,8 @@ public:
 	int get_face_count() const;
 
 	int get_format() const;
-	void set_format(int p_format, float p_quality = -1.0f);
+	void set_format(int p_format);
+	void set_format_with_quality(int p_format, float p_quality = -1.0f);
 
 	int get_version() const;
 	void set_version(int p_version);

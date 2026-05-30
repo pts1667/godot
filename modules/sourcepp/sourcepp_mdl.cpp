@@ -18,22 +18,45 @@
 #include "scene/3d/bone_attachment_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/3d/physics/animatable_body_3d.h"
+#include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/3d/skeleton_3d.h"
+#include "scene/resources/3d/box_shape_3d.h"
+#include "scene/resources/3d/convex_polygon_shape_3d.h"
 #include "scene/resources/material.h"
 
 #include <mdlpp/mdlpp.h>
 
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
 #include <cstring>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace {
+
+constexpr float SOURCE_UNIT_TO_METERS = 0.0254f;
+constexpr float SOURCE_IMPORT_ROTATION_X = -1.5707963267948966f;
 
 Vector3 _to_vector3(const sourcepp::math::Vec3f &p_vector) {
 	return Vector3(p_vector[0], p_vector[1], p_vector[2]);
 }
 
+Quaternion _sanitize_quaternion(const Quaternion &p_quaternion) {
+	if (!p_quaternion.is_finite()) {
+		return Quaternion();
+	}
+	const real_t length_squared = p_quaternion.length_squared();
+	if (Math::is_zero_approx(length_squared)) {
+		return Quaternion();
+	}
+	return p_quaternion.is_normalized() ? p_quaternion : p_quaternion.normalized();
+}
+
 Quaternion _to_quaternion(const sourcepp::math::Quat &p_quaternion) {
-	return Quaternion(p_quaternion[0], p_quaternion[1], p_quaternion[2], p_quaternion[3]);
+	return _sanitize_quaternion(Quaternion(p_quaternion[0], p_quaternion[1], p_quaternion[2], p_quaternion[3]));
 }
 
 Transform3D _to_bone_rest(const mdlpp::MDL::Bone &p_bone) {
@@ -201,6 +224,703 @@ String _build_scene_name(const String &p_name, const String &p_path) {
 	}
 	scene_name = scene_name.validate_node_name();
 	return scene_name.is_empty() ? String("SourcePPMDL") : scene_name;
+}
+
+constexpr float PHY_METERS_TO_SOURCE_UNITS = 39.37007874015748f;
+
+Vector3 _convert_phy_position(float p_x, float p_y, float p_z) {
+	return Vector3(p_x, p_z, -p_y) * PHY_METERS_TO_SOURCE_UNITS;
+}
+
+struct CollisionBoxSpec {
+	int bone = -1;
+	String bone_name;
+	String name;
+	Transform3D transform;
+	Vector3 size;
+};
+
+enum class CollisionShapeKind {
+	BOX,
+	CONVEX,
+};
+
+struct CollisionShapeSpec {
+	CollisionShapeKind kind = CollisionShapeKind::BOX;
+	Transform3D transform;
+	Vector3 size;
+	Vector<Vector3> points;
+};
+
+struct CollisionBodySpec {
+	int bone = -1;
+	String bone_name;
+	String name;
+	String source;
+	Transform3D transform;
+	Vector<CollisionShapeSpec> shapes;
+};
+
+enum class ModelBindingMode {
+	MODEL_SPACE,
+	RIGID_BONE,
+	SKINNED,
+};
+
+struct ModelBindingInfo {
+	ModelBindingMode mode = ModelBindingMode::MODEL_SPACE;
+	int bone = -1;
+};
+
+struct PhyFileHeader {
+	int32_t size = 0;
+	int32_t id = 0;
+	int32_t solid_count = 0;
+	int32_t checksum = 0;
+};
+
+struct PhyCollideHeader {
+	int32_t size = 0;
+	int32_t vphysics_id = 0;
+	int16_t version = 0;
+	int16_t model_type = 0;
+};
+
+struct PhyCompactSurfaceHeader {
+	int32_t surface_size = 0;
+	float drag_axis_areas[3]{};
+	int32_t axis_map_size = 0;
+};
+
+struct PhyCompactSurface {
+	float mass_center[3]{};
+	float rotation_inertia[3]{};
+	float upper_limit_radius = 0.0f;
+	int32_t packed_size = 0;
+	int32_t offset_ledgetree_root = 0;
+	int32_t dummy[3]{};
+};
+
+struct PhyCompactLedge {
+	int32_t c_point_offset = 0;
+	int32_t client_data = 0;
+	uint32_t packed_flags = 0;
+	int16_t triangle_count = 0;
+	int16_t reserved = 0;
+};
+
+struct PhyCompactTriangle {
+	uint32_t packed_flags = 0;
+	uint32_t packed_edges[3]{};
+};
+
+struct PhyCompactLedgeNode {
+	int32_t offset_right_node = 0;
+	int32_t offset_compact_ledge = 0;
+	float center[3]{};
+	float radius = 0.0f;
+	uint8_t box_sizes[3]{};
+	uint8_t free_0 = 0;
+};
+
+struct PhyKeyValuesInfo {
+	std::unordered_map<int, String> solid_bone_names;
+	String root_bone_name;
+};
+
+constexpr uint32_t _make_fourcc(char p_a, char p_b, char p_c, char p_d) {
+	return static_cast<uint32_t>(static_cast<uint8_t>(p_a)) |
+			(static_cast<uint32_t>(static_cast<uint8_t>(p_b)) << 8) |
+			(static_cast<uint32_t>(static_cast<uint8_t>(p_c)) << 16) |
+			(static_cast<uint32_t>(static_cast<uint8_t>(p_d)) << 24);
+}
+
+template <typename T>
+bool _read_phy_struct(const Vector<uint8_t> &p_bytes, size_t p_offset, T &r_value) {
+	if (p_offset + sizeof(T) > static_cast<size_t>(p_bytes.size())) {
+		return false;
+	}
+	std::memcpy(&r_value, p_bytes.ptr() + p_offset, sizeof(T));
+	return true;
+}
+
+void _skip_phy_keyvalues_whitespace(std::string_view p_text, size_t &r_offset) {
+	while (r_offset < p_text.size()) {
+		const char current = p_text[r_offset];
+		if (std::isspace(static_cast<unsigned char>(current))) {
+			r_offset++;
+			continue;
+		}
+		if (current == '/' && r_offset + 1 < p_text.size() && p_text[r_offset + 1] == '/') {
+			r_offset += 2;
+			while (r_offset < p_text.size() && p_text[r_offset] != '\n') {
+				r_offset++;
+			}
+			continue;
+		}
+		break;
+	}
+}
+
+bool _read_phy_keyvalues_token(std::string_view p_text, size_t &r_offset, std::string &r_token) {
+	_skip_phy_keyvalues_whitespace(p_text, r_offset);
+	if (r_offset >= p_text.size()) {
+		return false;
+	}
+
+	const char current = p_text[r_offset];
+	if (current == '{' || current == '}') {
+		r_token.assign(1, current);
+		r_offset++;
+		return true;
+	}
+
+	if (current == '"') {
+		r_offset++;
+		r_token.clear();
+		while (r_offset < p_text.size()) {
+			const char value = p_text[r_offset++];
+			if (value == '"') {
+				break;
+			}
+			if (value == '\\' && r_offset < p_text.size()) {
+				r_token.push_back(p_text[r_offset++]);
+				continue;
+			}
+			r_token.push_back(value);
+		}
+		return true;
+	}
+
+	const size_t token_start = r_offset;
+	while (r_offset < p_text.size()) {
+		const char value = p_text[r_offset];
+		if (std::isspace(static_cast<unsigned char>(value)) || value == '{' || value == '}') {
+			break;
+		}
+		r_offset++;
+	}
+	r_token = std::string(p_text.substr(token_start, r_offset - token_start));
+	return !r_token.empty();
+}
+
+PhyKeyValuesInfo _parse_phy_keyvalues(const Vector<uint8_t> &p_bytes, size_t p_offset) {
+	PhyKeyValuesInfo info;
+	if (p_offset >= static_cast<size_t>(p_bytes.size())) {
+		return info;
+	}
+
+	std::string text(reinterpret_cast<const char *>(p_bytes.ptr() + p_offset), p_bytes.size() - static_cast<int>(p_offset));
+	const size_t terminator = text.find('\0');
+	if (terminator != std::string::npos) {
+		text.resize(terminator);
+	}
+
+	size_t offset = 0;
+	std::string block_type;
+	std::string token;
+	while (_read_phy_keyvalues_token(text, offset, block_type)) {
+		if (!_read_phy_keyvalues_token(text, offset, token) || token != "{") {
+			break;
+		}
+
+		std::unordered_map<std::string, std::string> properties;
+		std::string key;
+		std::string value;
+		while (_read_phy_keyvalues_token(text, offset, key)) {
+			if (key == "}") {
+				break;
+			}
+			if (!_read_phy_keyvalues_token(text, offset, value)) {
+				break;
+			}
+			if (value == "{") {
+				int depth = 1;
+				std::string nested_token;
+				while (depth > 0 && _read_phy_keyvalues_token(text, offset, nested_token)) {
+					if (nested_token == "{") {
+						depth++;
+					} else if (nested_token == "}") {
+						depth--;
+					}
+				}
+				continue;
+			}
+			properties[key] = value;
+		}
+
+		if (block_type == "solid") {
+			const auto index_it = properties.find("index");
+			const auto name_it = properties.find("name");
+			if (index_it != properties.end() && name_it != properties.end()) {
+				info.solid_bone_names[std::atoi(index_it->second.c_str())] = String::utf8(name_it->second.c_str());
+			}
+		} else if (block_type == "editparams") {
+			if (const auto root_it = properties.find("rootname"); root_it != properties.end()) {
+				info.root_bone_name = String::utf8(root_it->second.c_str());
+			}
+		}
+	}
+
+	return info;
+}
+
+int _find_bone_index_by_name(const mdlpp::StudioModel *p_model, const String &p_bone_name) {
+	if (p_model == nullptr || p_bone_name.is_empty()) {
+		return -1;
+	}
+
+	const String normalized_name = p_bone_name.strip_edges().to_lower();
+	for (int bone_index = 0; bone_index < static_cast<int>(p_model->mdl.bones.size()); bone_index++) {
+		if (_get_bone_track_name(p_model, bone_index).to_lower() == normalized_name) {
+			return bone_index;
+		}
+	}
+	return -1;
+}
+
+bool _collect_phy_ledges(const Vector<uint8_t> &p_bytes, size_t p_node_offset, Vector<size_t> &r_ledge_offsets) {
+	PhyCompactLedgeNode node;
+	if (!_read_phy_struct(p_bytes, p_node_offset, node)) {
+		return false;
+	}
+
+	if (node.offset_right_node == 0) {
+		const int64_t ledge_offset = static_cast<int64_t>(p_node_offset) + static_cast<int64_t>(node.offset_compact_ledge);
+		if (ledge_offset < 0 || ledge_offset >= p_bytes.size()) {
+			return false;
+		}
+		r_ledge_offsets.push_back(static_cast<size_t>(ledge_offset));
+		return true;
+	}
+
+	const size_t left_offset = p_node_offset + sizeof(PhyCompactLedgeNode);
+	const int64_t right_offset = static_cast<int64_t>(p_node_offset) + static_cast<int64_t>(node.offset_right_node);
+	if (right_offset < 0 || right_offset >= p_bytes.size()) {
+		return false;
+	}
+	return _collect_phy_ledges(p_bytes, static_cast<size_t>(right_offset), r_ledge_offsets) &&
+			_collect_phy_ledges(p_bytes, left_offset, r_ledge_offsets);
+}
+
+Vector<Vector3> _build_phy_convex_points(const Vector<uint8_t> &p_bytes, size_t p_ledge_offset) {
+	Vector<Vector3> points;
+	PhyCompactLedge ledge;
+	if (!_read_phy_struct(p_bytes, p_ledge_offset, ledge) || ledge.triangle_count <= 0 || ledge.c_point_offset <= 0) {
+		return points;
+	}
+
+	std::vector<uint16_t> unique_indices;
+	unique_indices.reserve(static_cast<size_t>(ledge.triangle_count) * 3);
+	const size_t triangles_offset = p_ledge_offset + sizeof(PhyCompactLedge);
+	for (int triangle_index = 0; triangle_index < ledge.triangle_count; triangle_index++) {
+		PhyCompactTriangle triangle;
+		if (!_read_phy_struct(p_bytes, triangles_offset + sizeof(PhyCompactTriangle) * static_cast<size_t>(triangle_index), triangle)) {
+			return Vector<Vector3>();
+		}
+
+		for (int edge_index = 0; edge_index < 3; edge_index++) {
+			const uint16_t point_index = static_cast<uint16_t>(triangle.packed_edges[edge_index] & 0xFFFFu);
+			if (std::find(unique_indices.begin(), unique_indices.end(), point_index) == unique_indices.end()) {
+				unique_indices.push_back(point_index);
+			}
+		}
+	}
+
+	points.resize(static_cast<int>(unique_indices.size()));
+	const size_t points_offset = p_ledge_offset + static_cast<size_t>(ledge.c_point_offset);
+	for (int point_list_index = 0; point_list_index < points.size(); point_list_index++) {
+		const size_t vertex_offset = points_offset + static_cast<size_t>(unique_indices[static_cast<size_t>(point_list_index)]) * 16;
+		float vertex[4]{};
+		if (vertex_offset + sizeof(vertex) > static_cast<size_t>(p_bytes.size())) {
+			return Vector<Vector3>();
+		}
+		std::memcpy(vertex, p_bytes.ptr() + vertex_offset, sizeof(vertex));
+		points.write[point_list_index] = _convert_phy_position(vertex[0], vertex[1], vertex[2]);
+	}
+
+	return points;
+}
+
+Vector<CollisionBodySpec> _build_phy_collision_bodies(const mdlpp::StudioModel *p_model, const Vector<uint8_t> &p_phy_data) {
+	Vector<CollisionBodySpec> specs;
+	PhyFileHeader header;
+	if (p_model == nullptr || !_read_phy_struct(p_phy_data, 0, header) || header.size != static_cast<int32_t>(sizeof(PhyFileHeader)) || header.solid_count <= 0) {
+		return specs;
+	}
+
+	const Vector<Transform3D> global_rests = _build_global_bone_rests(p_model);
+	Vector<Transform3D> inverse_global_rests;
+	inverse_global_rests.resize(global_rests.size());
+	for (int bone_index = 0; bone_index < inverse_global_rests.size(); bone_index++) {
+		inverse_global_rests.write[bone_index] = global_rests[bone_index].affine_inverse();
+	}
+
+	const size_t header_offset = sizeof(PhyFileHeader);
+	size_t keyvalues_offset = header_offset;
+	for (int solid_index = 0; solid_index < header.solid_count; solid_index++) {
+		PhyCollideHeader collide_header;
+		if (!_read_phy_struct(p_phy_data, keyvalues_offset, collide_header) || collide_header.size <= 0) {
+			return Vector<CollisionBodySpec>();
+		}
+		keyvalues_offset += static_cast<size_t>(collide_header.size) + sizeof(int32_t);
+		if (keyvalues_offset > static_cast<size_t>(p_phy_data.size())) {
+			return Vector<CollisionBodySpec>();
+		}
+	}
+	const PhyKeyValuesInfo keyvalues = _parse_phy_keyvalues(p_phy_data, keyvalues_offset);
+	const uint32_t vphysics_id = _make_fourcc('V', 'P', 'H', 'Y');
+	const uint32_t ivps_id = _make_fourcc('I', 'V', 'P', 'S');
+
+	size_t solid_offset = header_offset;
+	for (int solid_index = 0; solid_index < header.solid_count; solid_index++) {
+		PhyCollideHeader collide_header;
+		if (!_read_phy_struct(p_phy_data, solid_offset, collide_header) || collide_header.size <= 0) {
+			return Vector<CollisionBodySpec>();
+		}
+
+		const size_t next_solid_offset = solid_offset + static_cast<size_t>(collide_header.size) + sizeof(int32_t);
+		if (next_solid_offset > static_cast<size_t>(p_phy_data.size())) {
+			return Vector<CollisionBodySpec>();
+		}
+
+		if (collide_header.vphysics_id != static_cast<int32_t>(vphysics_id) || collide_header.version != 0x100 || collide_header.model_type != 0) {
+			solid_offset = next_solid_offset;
+			continue;
+		}
+
+		PhyCompactSurfaceHeader compact_header;
+		PhyCompactSurface surface;
+		const size_t compact_header_offset = solid_offset + sizeof(PhyCollideHeader);
+		const size_t surface_offset = compact_header_offset + sizeof(PhyCompactSurfaceHeader);
+		if (!_read_phy_struct(p_phy_data, compact_header_offset, compact_header) || !_read_phy_struct(p_phy_data, surface_offset, surface)) {
+			return Vector<CollisionBodySpec>();
+		}
+		if (surface.dummy[2] != static_cast<int32_t>(ivps_id) || surface.offset_ledgetree_root <= 0) {
+			solid_offset = next_solid_offset;
+			continue;
+		}
+
+		Vector<size_t> ledge_offsets;
+		const size_t root_node_offset = surface_offset + static_cast<size_t>(surface.offset_ledgetree_root);
+		if (!_collect_phy_ledges(p_phy_data, root_node_offset, ledge_offsets)) {
+			return Vector<CollisionBodySpec>();
+		}
+
+		CollisionBodySpec spec;
+		spec.source = "phy";
+		spec.name = vformat("CollisionSolid_%d", solid_index);
+		if (const auto name_it = keyvalues.solid_bone_names.find(solid_index); name_it != keyvalues.solid_bone_names.end()) {
+			spec.bone_name = name_it->second;
+			spec.name = vformat("Collision_%s", spec.bone_name);
+		}
+		spec.bone = _find_bone_index_by_name(p_model, spec.bone_name);
+		if (spec.bone < 0 && header.solid_count == 1) {
+			if (!keyvalues.root_bone_name.is_empty()) {
+				spec.bone_name = keyvalues.root_bone_name;
+				spec.bone = _find_bone_index_by_name(p_model, spec.bone_name);
+			}
+		}
+
+		const Vector3 model_mass_center = _convert_phy_position(surface.mass_center[0], surface.mass_center[1], surface.mass_center[2]);
+		const Transform3D bone_space = (spec.bone >= 0 && spec.bone < inverse_global_rests.size()) ? inverse_global_rests[spec.bone] : Transform3D();
+		const Vector3 local_mass_center = (spec.bone >= 0 && spec.bone < inverse_global_rests.size()) ? bone_space.xform(model_mass_center) : model_mass_center;
+		for (int ledge_index = 0; ledge_index < ledge_offsets.size(); ledge_index++) {
+			Vector<Vector3> convex_points = _build_phy_convex_points(p_phy_data, ledge_offsets[ledge_index]);
+			if (convex_points.size() < 3) {
+				continue;
+			}
+			if (spec.bone >= 0 && spec.bone < inverse_global_rests.size()) {
+				for (int point_index = 0; point_index < convex_points.size(); point_index++) {
+					convex_points.write[point_index] = bone_space.xform(convex_points[point_index]);
+				}
+			}
+
+			CollisionShapeSpec shape_spec;
+			shape_spec.kind = CollisionShapeKind::CONVEX;
+			shape_spec.transform.origin = -local_mass_center;
+			shape_spec.points = convex_points;
+			spec.shapes.push_back(shape_spec);
+		}
+
+		if (!spec.shapes.is_empty()) {
+			String validated_name = spec.name.validate_node_name();
+			if (!validated_name.is_empty()) {
+				spec.name = validated_name;
+			}
+			specs.push_back(spec);
+		}
+
+		solid_offset = next_solid_offset;
+	}
+
+	return specs;
+}
+
+struct CollisionBoundsAccumulator {
+	bool valid = false;
+	Vector3 min;
+	Vector3 max;
+
+	void expand_to(const Vector3 &p_point) {
+		if (!valid) {
+			min = p_point;
+			max = p_point;
+			valid = true;
+			return;
+		}
+		min.x = MIN(min.x, p_point.x);
+		min.y = MIN(min.y, p_point.y);
+		min.z = MIN(min.z, p_point.z);
+		max.x = MAX(max.x, p_point.x);
+		max.y = MAX(max.y, p_point.y);
+		max.z = MAX(max.z, p_point.z);
+	}
+};
+
+int _get_dominant_bone(const mdlpp::BakedModel::Vertex &p_vertex, int p_bone_count) {
+	int dominant_bone = -1;
+	float dominant_weight = -1.0f;
+	for (int influence_index = 0; influence_index < static_cast<int>(p_vertex.bones.size()); influence_index++) {
+		const int bone = p_vertex.bones[static_cast<size_t>(influence_index)];
+		const float weight = p_vertex.weights[static_cast<size_t>(influence_index)];
+		if (bone < 0 || bone >= p_bone_count) {
+			continue;
+		}
+		if (weight > dominant_weight) {
+			dominant_bone = bone;
+			dominant_weight = weight;
+		}
+	}
+	return dominant_bone;
+}
+
+bool _has_nonzero_bone_weights(const mdlpp::BakedModel::Vertex &p_vertex) {
+	for (int influence_index = 0; influence_index < static_cast<int>(p_vertex.weights.size()); influence_index++) {
+		if (p_vertex.weights[static_cast<size_t>(influence_index)] > 0.0001f) {
+			return true;
+		}
+	}
+	return false;
+}
+
+ModelBindingInfo _get_model_binding_info(const mdlpp::StudioModel *p_model, const mdlpp::BakedModel &p_baked_model) {
+	ModelBindingInfo info;
+	if (p_model == nullptr || p_model->mdl.bones.empty() || p_baked_model.vertices.empty()) {
+		return info;
+	}
+
+	const int bone_count = static_cast<int>(p_model->mdl.bones.size());
+	int rigid_bone = -1;
+	bool saw_weighted_vertex = false;
+	for (const mdlpp::BakedModel::Vertex &vertex : p_baked_model.vertices) {
+		int vertex_bone = -1;
+		int influence_count = 0;
+		for (int influence_index = 0; influence_index < static_cast<int>(vertex.bones.size()); influence_index++) {
+			const int bone = vertex.bones[static_cast<size_t>(influence_index)];
+			const float weight = vertex.weights[static_cast<size_t>(influence_index)];
+			if (weight <= 0.0001f || bone < 0 || bone >= bone_count) {
+				continue;
+			}
+			saw_weighted_vertex = true;
+			influence_count++;
+			if (influence_count == 1) {
+				vertex_bone = bone;
+			} else {
+				info.mode = ModelBindingMode::SKINNED;
+				info.bone = -1;
+				return info;
+			}
+		}
+
+		if (influence_count == 0) {
+			continue;
+		}
+		if (rigid_bone == -1) {
+			rigid_bone = vertex_bone;
+		} else if (rigid_bone != vertex_bone) {
+			info.mode = ModelBindingMode::SKINNED;
+			info.bone = -1;
+			return info;
+		}
+	}
+
+	if (rigid_bone >= 0) {
+		info.mode = ModelBindingMode::RIGID_BONE;
+		info.bone = rigid_bone;
+		return info;
+	}
+
+	if (!saw_weighted_vertex && bone_count == 1) {
+		info.mode = ModelBindingMode::RIGID_BONE;
+		info.bone = 0;
+	}
+
+	return info;
+}
+
+Vector<CollisionBodySpec> _build_generated_collision_boxes(const mdlpp::StudioModel *p_model, const mdlpp::BakedModel &p_baked_model) {
+	Vector<CollisionBodySpec> specs;
+	if (p_model == nullptr || p_model->mdl.bones.empty() || p_baked_model.vertices.empty()) {
+		return specs;
+	}
+
+	const int bone_count = static_cast<int>(p_model->mdl.bones.size());
+	Vector<uint8_t> collision_bone_mask;
+	collision_bone_mask.resize(bone_count);
+	bool has_explicit_physics_bones = false;
+	for (int bone_index = 0; bone_index < bone_count; bone_index++) {
+		const bool uses_physics_bone = p_model->mdl.bones[static_cast<size_t>(bone_index)].physicsBone >= 0;
+		collision_bone_mask.write[bone_index] = uses_physics_bone ? 1 : 0;
+		has_explicit_physics_bones = has_explicit_physics_bones || uses_physics_bone;
+	}
+	if (!has_explicit_physics_bones) {
+		for (int bone_index = 0; bone_index < bone_count; bone_index++) {
+			collision_bone_mask.write[bone_index] = 1;
+		}
+	}
+
+	const Vector<Transform3D> global_rests = _build_global_bone_rests(p_model);
+	Vector<Transform3D> inverse_global_rests;
+	inverse_global_rests.resize(global_rests.size());
+	for (int bone_index = 0; bone_index < inverse_global_rests.size(); bone_index++) {
+		inverse_global_rests.write[bone_index] = global_rests[bone_index].affine_inverse();
+	}
+
+	Vector<CollisionBoundsAccumulator> bounds;
+	bounds.resize(bone_count);
+	CollisionBoundsAccumulator unweighted_bounds;
+	for (const mdlpp::BakedModel::Vertex &vertex : p_baked_model.vertices) {
+		const int dominant_bone = _get_dominant_bone(vertex, bone_count);
+		if (dominant_bone < 0 || dominant_bone >= bone_count) {
+			if (!_has_nonzero_bone_weights(vertex)) {
+				unweighted_bounds.expand_to(_to_vector3(vertex.position));
+			}
+			continue;
+		}
+		if (collision_bone_mask[dominant_bone] == 0) {
+			continue;
+		}
+		const Vector3 model_position = _to_vector3(vertex.position);
+		const Vector3 local_position = inverse_global_rests[dominant_bone].xform(model_position);
+		bounds.write[dominant_bone].expand_to(local_position);
+	}
+
+	for (int bone_index = 0; bone_index < bone_count; bone_index++) {
+		const CollisionBoundsAccumulator &bone_bounds = bounds[bone_index];
+		if (!bone_bounds.valid) {
+			continue;
+		}
+
+		const Vector3 raw_size = bone_bounds.max - bone_bounds.min;
+		const Vector3 box_size(
+				MAX(raw_size.x, 0.05f),
+				MAX(raw_size.y, 0.05f),
+				MAX(raw_size.z, 0.05f));
+		CollisionBodySpec body_spec;
+		body_spec.bone = bone_index;
+		body_spec.bone_name = _get_bone_track_name(p_model, bone_index);
+		body_spec.name = vformat("Collision_%s", body_spec.bone_name.is_empty() ? vformat("Bone_%d", bone_index) : body_spec.bone_name);
+		body_spec.source = "generated_bounds";
+		body_spec.transform.origin = (bone_bounds.min + bone_bounds.max) * 0.5f;
+
+		CollisionShapeSpec shape_spec;
+		shape_spec.kind = CollisionShapeKind::BOX;
+		shape_spec.size = box_size;
+		body_spec.shapes.push_back(shape_spec);
+		specs.push_back(body_spec);
+	}
+
+	if (unweighted_bounds.valid) {
+		const Vector3 raw_size = unweighted_bounds.max - unweighted_bounds.min;
+		const Vector3 box_size(
+				MAX(raw_size.x, 0.05f),
+				MAX(raw_size.y, 0.05f),
+				MAX(raw_size.z, 0.05f));
+		CollisionBodySpec body_spec;
+		body_spec.bone = -1;
+		body_spec.name = "Collision_Unweighted";
+		body_spec.source = "generated_bounds";
+		body_spec.transform.origin = (unweighted_bounds.min + unweighted_bounds.max) * 0.5f;
+
+		CollisionShapeSpec shape_spec;
+		shape_spec.kind = CollisionShapeKind::BOX;
+		shape_spec.size = box_size;
+		body_spec.shapes.push_back(shape_spec);
+		specs.push_back(body_spec);
+	}
+
+	return specs;
+}
+
+int _append_collision_bodies(Node3D *p_root, Skeleton3D *p_skeleton, const Vector<CollisionBodySpec> &p_specs) {
+	if (p_root == nullptr || p_skeleton == nullptr) {
+		return 0;
+	}
+
+	int created_shape_count = 0;
+	Vector<AnimatableBody3D *> created_bodies;
+	for (int spec_index = 0; spec_index < p_specs.size(); spec_index++) {
+		const CollisionBodySpec &spec = p_specs[spec_index];
+		AnimatableBody3D *collision_body = memnew(AnimatableBody3D);
+		collision_body->set_name(spec.bone >= 0 ? String("AnimatableBody3D") : String("CollisionBody3D"));
+		collision_body->set_transform(spec.transform);
+		collision_body->set_meta("sourcepp_collision_source", spec.source);
+		collision_body->set_meta("sourcepp_collision_bone", spec.bone);
+		collision_body->set_meta("sourcepp_collision_bone_name", spec.bone_name);
+
+		for (int shape_index = 0; shape_index < spec.shapes.size(); shape_index++) {
+			const CollisionShapeSpec &shape_spec = spec.shapes[shape_index];
+			CollisionShape3D *collision_shape = memnew(CollisionShape3D);
+			collision_shape->set_name(vformat("CollisionShape3D_%d", shape_index));
+			collision_shape->set_transform(shape_spec.transform);
+			if (shape_spec.kind == CollisionShapeKind::BOX) {
+				Ref<BoxShape3D> box_shape;
+				box_shape.instantiate();
+				box_shape->set_size(shape_spec.size);
+				collision_shape->set_shape(box_shape);
+				collision_shape->set_meta("sourcepp_collision_shape_type", "box");
+				collision_shape->set_meta("sourcepp_collision_shape_size", shape_spec.size);
+			} else {
+				Ref<ConvexPolygonShape3D> convex_shape;
+				convex_shape.instantiate();
+				convex_shape->set_points(shape_spec.points);
+				collision_shape->set_shape(convex_shape);
+				collision_shape->set_meta("sourcepp_collision_shape_type", "convex");
+				collision_shape->set_meta("sourcepp_collision_point_count", shape_spec.points.size());
+			}
+			collision_body->add_child(collision_shape);
+			created_shape_count++;
+		}
+
+		if (spec.bone >= 0) {
+			BoneAttachment3D *collision_attachment = memnew(BoneAttachment3D);
+			String attachment_name = spec.name.validate_node_name();
+			if (attachment_name.is_empty()) {
+				attachment_name = vformat("Collision_%d", spec_index);
+			}
+			collision_attachment->set_name(attachment_name);
+			collision_attachment->set_bone_idx(spec.bone);
+			collision_attachment->set_bone_name(spec.bone_name);
+			collision_attachment->add_child(collision_body);
+			p_skeleton->add_child(collision_attachment);
+		} else {
+			String body_name = spec.name.validate_node_name();
+			if (!body_name.is_empty()) {
+				collision_body->set_name(body_name);
+			}
+			p_root->add_child(collision_body);
+		}
+
+		for (int body_index = 0; body_index < created_bodies.size(); body_index++) {
+			AnimatableBody3D *other_body = created_bodies[body_index];
+			collision_body->add_collision_exception_with(other_body);
+			other_body->add_collision_exception_with(collision_body);
+		}
+		created_bodies.push_back(collision_body);
+	}
+
+	return created_shape_count;
 }
 
 }
@@ -935,7 +1655,14 @@ int SourcePPMDL::get_vertex_count(int p_lod) const {
 int SourcePPMDL::get_surface_count(int p_lod) const {
 	mdlpp::BakedModel baked_model;
 	ERR_FAIL_COND_V(_get_baked_model(p_lod, baked_model) != OK, 0);
-	return static_cast<int>(baked_model.meshes.size());
+
+	int surface_count = 0;
+	for (const mdlpp::BakedModel::Mesh &mesh : baked_model.meshes) {
+		if (!mesh.indices.empty()) {
+			surface_count++;
+		}
+	}
+	return surface_count;
 }
 
 PackedInt32Array SourcePPMDL::get_surface_material_indices(int p_lod) const {
@@ -943,9 +1670,11 @@ PackedInt32Array SourcePPMDL::get_surface_material_indices(int p_lod) const {
 	ERR_FAIL_COND_V(_get_baked_model(p_lod, baked_model) != OK, PackedInt32Array());
 
 	PackedInt32Array out;
-	out.resize(static_cast<int>(baked_model.meshes.size()));
-	for (int i = 0; i < out.size(); i++) {
-		out.set(i, baked_model.meshes[static_cast<size_t>(i)].materialIndex);
+	for (const mdlpp::BakedModel::Mesh &mesh : baked_model.meshes) {
+		if (mesh.indices.empty()) {
+			continue;
+		}
+		out.push_back(mesh.materialIndex);
 	}
 	return out;
 }
@@ -956,6 +1685,9 @@ PackedStringArray SourcePPMDL::get_surface_materials(int p_lod) const {
 
 	PackedStringArray out;
 	for (const mdlpp::BakedModel::Mesh &mesh : baked_model.meshes) {
+		if (mesh.indices.empty()) {
+			continue;
+		}
 		if (!mesh.materialName.empty()) {
 			out.push_back(_from_utf8(mesh.materialName));
 		} else if (mesh.materialIndex >= 0 && mesh.materialIndex < static_cast<int>(get_model()->mdl.materials.size())) {
@@ -1004,6 +1736,10 @@ Ref<ArrayMesh> SourcePPMDL::create_mesh(int p_lod) const {
 
 	for (int mesh_index = 0; mesh_index < static_cast<int>(baked_model.meshes.size()); mesh_index++) {
 		const mdlpp::BakedModel::Mesh &baked_mesh = baked_model.meshes[static_cast<size_t>(mesh_index)];
+		if (baked_mesh.indices.empty()) {
+			continue;
+		}
+
 		Array arrays;
 		arrays.resize(Mesh::ARRAY_MAX);
 		arrays[Mesh::ARRAY_VERTEX] = vertices;
@@ -1013,18 +1749,19 @@ Ref<ArrayMesh> SourcePPMDL::create_mesh(int p_lod) const {
 		arrays[Mesh::ARRAY_BONES] = bones;
 		arrays[Mesh::ARRAY_WEIGHTS] = weights;
 
-		Vector<int> indices;
+		PackedInt32Array indices;
 		indices.resize(static_cast<int>(baked_mesh.indices.size()));
 		for (int i = 0; i < indices.size(); i++) {
-			indices.write[i] = static_cast<int>(baked_mesh.indices[static_cast<size_t>(i)]);
+			indices.set(i, static_cast<int>(baked_mesh.indices[static_cast<size_t>(i)]));
 		}
 		arrays[Mesh::ARRAY_INDEX] = indices;
 
+		const int surface_index = mesh->get_surface_count();
 		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
 		if (!baked_mesh.materialName.empty()) {
-			mesh->surface_set_name(mesh_index, _from_utf8(baked_mesh.materialName));
+			mesh->surface_set_name(surface_index, _from_utf8(baked_mesh.materialName));
 		} else if (baked_mesh.materialIndex >= 0 && baked_mesh.materialIndex < static_cast<int>(get_model()->mdl.materials.size())) {
-			mesh->surface_set_name(mesh_index, _from_utf8(get_model()->mdl.materials[static_cast<size_t>(baked_mesh.materialIndex)].name));
+			mesh->surface_set_name(surface_index, _from_utf8(get_model()->mdl.materials[static_cast<size_t>(baked_mesh.materialIndex)].name));
 		}
 	}
 
@@ -1068,7 +1805,7 @@ Skeleton3D *SourcePPMDL::create_skeleton() const {
 	return skeleton;
 }
 
-Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachments) const {
+Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachments, bool p_include_collision) const {
 	ERR_FAIL_COND_V_MSG(get_model() == nullptr, nullptr, "SourcePPMDL must be opened before use.");
 	ERR_FAIL_COND_V_MSG(p_skin_family < 0, nullptr, "Skin family must be non-negative.");
 	ERR_FAIL_COND_V_MSG(!get_model()->mdl.skins.empty() && p_skin_family >= static_cast<int>(get_model()->mdl.skins.size()), nullptr, "Requested skin family is out of range.");
@@ -1091,18 +1828,47 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 		memdelete(skeleton);
 		ERR_FAIL_V_MSG(nullptr, "Failed to initialize SourceAnimPlayer for the imported model.");
 	}
-	if (anim_player->get_sequence_count() > 0) {
-		anim_player->set("sequence_descriptor", 0);
-	}
+	anim_player->set("sequence_descriptor", -1);
 
 	Node3D *root = memnew(Node3D);
 	root->set_name(_build_scene_name(get_name(), mdl_path));
+	root->set_rotation(Vector3(SOURCE_IMPORT_ROTATION_X, 0.0f, 0.0f));
+	root->set_scale(Vector3(SOURCE_UNIT_TO_METERS, SOURCE_UNIT_TO_METERS, SOURCE_UNIT_TO_METERS));
 
 	const int lod_count = MAX(get_lod_count(), 1);
 	float visibility_step = 20.0f;
 	float visibility_margin = 2.0f;
+	int collision_shape_count = 0;
+	int collision_body_count = 0;
+	String collision_source = "none";
+	String phy_collision_path;
+	std::unordered_map<int, BoneAttachment3D *> rigid_mesh_attachments;
+
+	auto get_or_create_rigid_mesh_attachment = [&](int p_bone) -> BoneAttachment3D * {
+		auto existing = rigid_mesh_attachments.find(p_bone);
+		if (existing != rigid_mesh_attachments.end()) {
+			return existing->second;
+		}
+
+		BoneAttachment3D *attachment = memnew(BoneAttachment3D);
+		String attachment_name = vformat("RigidMesh_%s", _get_bone_track_name(get_model(), p_bone));
+		attachment_name = attachment_name.validate_node_name();
+		if (attachment_name.is_empty()) {
+			attachment_name = vformat("RigidMesh_%d", p_bone);
+		}
+		attachment->set_name(attachment_name);
+		attachment->set_bone_idx(p_bone);
+		attachment->set_bone_name(_get_bone_track_name(get_model(), p_bone));
+		skeleton->add_child(attachment);
+		rigid_mesh_attachments.emplace(p_bone, attachment);
+		return attachment;
+	};
 
 	for (int lod_index = 0; lod_index < lod_count; lod_index++) {
+		mdlpp::BakedModel baked_model;
+		ERR_FAIL_COND_V_MSG(_get_baked_model(lod_index, baked_model) != OK, nullptr, "Failed to bake one of the imported LOD meshes.");
+		const ModelBindingInfo binding_info = _get_model_binding_info(get_model(), baked_model);
+
 		Ref<ArrayMesh> mesh = create_mesh(lod_index);
 		ERR_FAIL_COND_V_MSG(mesh.is_null(), nullptr, "Failed to create one of the imported LOD meshes.");
 
@@ -1116,9 +1882,22 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 		MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
 		mesh_instance->set_name(vformat("MeshInstance3D_LOD%d", lod_index));
 		mesh_instance->set_mesh(mesh);
-		mesh_instance->set_skin(skin);
-		mesh_instance->set_skeleton_path(NodePath("../Skeleton3D"));
 		mesh_instance->set_meta("sourcepp_mdl_lod", lod_index);
+		mesh_instance->set_meta("sourcepp_mesh_binding_bone", binding_info.bone);
+		switch (binding_info.mode) {
+			case ModelBindingMode::SKINNED: {
+				mesh_instance->set_skin(skin);
+				mesh_instance->set_skeleton_path(NodePath("../Skeleton3D"));
+				mesh_instance->set_meta("sourcepp_mesh_binding_mode", "skinned");
+			} break;
+			case ModelBindingMode::RIGID_BONE: {
+				mesh_instance->set_meta("sourcepp_mesh_binding_mode", "rigid_bone");
+			} break;
+			case ModelBindingMode::MODEL_SPACE:
+			default: {
+				mesh_instance->set_meta("sourcepp_mesh_binding_mode", "model_space");
+			} break;
+		}
 
 		const PackedInt32Array surface_material_indices = get_surface_material_indices(lod_index);
 		for (int surface_index = 0; surface_index < mesh->get_surface_count() && surface_index < surface_material_indices.size(); surface_index++) {
@@ -1135,7 +1914,11 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 			mesh_instance->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_DISABLED);
 		}
 
-		root->add_child(mesh_instance);
+		if (binding_info.mode == ModelBindingMode::RIGID_BONE && binding_info.bone >= 0) {
+			get_or_create_rigid_mesh_attachment(binding_info.bone)->add_child(mesh_instance);
+		} else {
+			root->add_child(mesh_instance);
+		}
 	}
 
 	if (p_include_attachments) {
@@ -1154,6 +1937,22 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 		}
 	}
 
+	if (p_include_collision) {
+		Vector<CollisionBodySpec> collision_specs;
+		mdlpp::BakedModel baked_model;
+		if (_get_baked_model(0, baked_model) == OK) {
+			collision_specs = _build_generated_collision_boxes(get_model(), baked_model);
+			if (!collision_specs.is_empty()) {
+				collision_source = "generated_bounds";
+			}
+		}
+
+		if (!collision_specs.is_empty()) {
+			collision_body_count = collision_specs.size();
+			collision_shape_count = _append_collision_bodies(root, skeleton, collision_specs);
+		}
+	}
+
 	root->add_child(skeleton);
 	root->add_child(anim_player);
 	root->set_meta("sourcepp_mdl_skin_family", p_skin_family);
@@ -1163,8 +1962,12 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 	root->set_meta("sourcepp_mdl_path", mdl_path);
 	root->set_meta("sourcepp_vtx_path", vtx_path);
 	root->set_meta("sourcepp_vvd_path", vvd_path);
+	root->set_meta("sourcepp_phy_path", phy_collision_path);
 	root->set_meta("sourcepp_materials", get_materials());
 	root->set_meta("sourcepp_sequences", anim_player->get_sequence_names());
+	root->set_meta("sourcepp_collision_source", collision_source);
+	root->set_meta("sourcepp_collision_body_count", collision_body_count);
+	root->set_meta("sourcepp_collision_shape_count", collision_shape_count);
 	return root;
 }
 
@@ -1213,7 +2016,7 @@ void SourcePPMDL::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("create_mesh", "lod"), &SourcePPMDL::create_mesh, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("create_skin"), &SourcePPMDL::create_skin);
 	ClassDB::bind_method(D_METHOD("create_skeleton"), &SourcePPMDL::create_skeleton);
-	ClassDB::bind_method(D_METHOD("create_model_node", "skin_family", "include_attachments"), &SourcePPMDL::create_model_node, DEFVAL(0), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("create_model_node", "skin_family", "include_attachments", "include_collision"), &SourcePPMDL::create_model_node, DEFVAL(0), DEFVAL(true), DEFVAL(true));
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "resolver", PROPERTY_HINT_RESOURCE_TYPE, "SourcePPResolver"), "set_resolver", "get_resolver");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "resolver_game_id"), "set_resolver_game_id", "get_resolver_game_id");

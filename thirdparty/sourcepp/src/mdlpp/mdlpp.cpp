@@ -472,7 +472,6 @@ StudioModel::operator bool() const {
 
 BakedModel StudioModel::processModelData(int currentLOD) const {
 	BakedModel model;
-	std::vector<int32_t> source_to_baked_vertex(this->vvd.vertices.size(), -1);
 
 	static constexpr auto convertVertex = [](const VVD::Vertex& vertex) {
 		BakedModel::Vertex baked_vertex{};
@@ -487,28 +486,20 @@ BakedModel StudioModel::processModelData(int currentLOD) const {
 		return baked_vertex;
 	};
 
-	auto add_baked_vertex = [&](int32_t source_vertex_index) {
-		if (source_vertex_index < 0 || source_vertex_index >= static_cast<int32_t>(this->vvd.vertices.size())) {
-			return;
-		}
-		if (source_to_baked_vertex[static_cast<size_t>(source_vertex_index)] != -1) {
-			return;
-		}
-		source_to_baked_vertex[static_cast<size_t>(source_vertex_index)] = static_cast<int32_t>(model.vertices.size());
-		model.vertices.push_back(convertVertex(this->vvd.vertices[static_cast<size_t>(source_vertex_index)]));
-	};
-
 	if (this->vvd.fixups.empty()) {
-		for (int32_t source_vertex_index = 0; source_vertex_index < static_cast<int32_t>(this->vvd.vertices.size()); source_vertex_index++) {
-			add_baked_vertex(source_vertex_index);
-		}
+		model.vertices.reserve(this->vvd.vertices.size());
+		std::transform(this->vvd.vertices.begin(), this->vvd.vertices.end(), std::back_inserter(model.vertices), convertVertex);
 	} else {
 		for (const auto& [LOD, sourceVertexID, vertexCount] : this->vvd.fixups) {
 			if (LOD < currentLOD) {
 				continue;
 			}
 			for (int32_t vertex_index = 0; vertex_index < vertexCount; vertex_index++) {
-				add_baked_vertex(sourceVertexID + vertex_index);
+				const int32_t source_vertex_index = sourceVertexID + vertex_index;
+				if (source_vertex_index < 0 || source_vertex_index >= static_cast<int32_t>(this->vvd.vertices.size())) {
+					continue;
+				}
+				model.vertices.push_back(convertVertex(this->vvd.vertices[static_cast<size_t>(source_vertex_index)]));
 			}
 		}
 	}
@@ -531,38 +522,48 @@ BakedModel StudioModel::processModelData(int currentLOD) const {
 
 				std::vector<uint32_t> indices;
 				for (const auto& stripGroup : vtxMesh.stripGroups) {
-					auto append_triangle = [&](uint16_t p_index_a, uint16_t p_index_b, uint16_t p_index_c) {
-						const int32_t source_index_a = stripGroup.vertices.at(p_index_a).meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
-						const int32_t source_index_b = stripGroup.vertices.at(p_index_b).meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
-						const int32_t source_index_c = stripGroup.vertices.at(p_index_c).meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
-
-						if (source_index_a < 0 || source_index_b < 0 || source_index_c < 0 ||
-								source_index_a >= static_cast<int32_t>(source_to_baked_vertex.size()) ||
-								source_index_b >= static_cast<int32_t>(source_to_baked_vertex.size()) ||
-								source_index_c >= static_cast<int32_t>(source_to_baked_vertex.size())) {
-							return;
-						}
-
-						const int32_t baked_index_a = source_to_baked_vertex[static_cast<size_t>(source_index_a)];
-						const int32_t baked_index_b = source_to_baked_vertex[static_cast<size_t>(source_index_b)];
-						const int32_t baked_index_c = source_to_baked_vertex[static_cast<size_t>(source_index_c)];
-						if (baked_index_a < 0 || baked_index_b < 0 || baked_index_c < 0) {
-							return;
-						}
-
-						indices.push_back(static_cast<uint32_t>(baked_index_a));
-						indices.push_back(static_cast<uint32_t>(baked_index_b));
-						indices.push_back(static_cast<uint32_t>(baked_index_c));
-					};
 					for (const auto& strip : stripGroup.strips) {
-						// Remember to flip the winding order
+						auto append_triangle = [&](uint16_t p_index_a, uint16_t p_index_b, uint16_t p_index_c) {
+							if (p_index_a >= stripGroup.vertices.size() || p_index_b >= stripGroup.vertices.size() || p_index_c >= stripGroup.vertices.size()) {
+								return;
+							}
+
+							const int32_t baked_index_a = stripGroup.vertices[p_index_a].meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
+							const int32_t baked_index_b = stripGroup.vertices[p_index_b].meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
+							const int32_t baked_index_c = stripGroup.vertices[p_index_c].meshVertexID + mdlMesh.verticesOffset + mdlModel.verticesOffset;
+
+							if (baked_index_a < 0 || baked_index_b < 0 || baked_index_c < 0 ||
+									baked_index_a >= static_cast<int32_t>(model.vertices.size()) ||
+									baked_index_b >= static_cast<int32_t>(model.vertices.size()) ||
+									baked_index_c >= static_cast<int32_t>(model.vertices.size())) {
+								return;
+							}
+
+							indices.push_back(static_cast<uint32_t>(baked_index_a));
+							indices.push_back(static_cast<uint32_t>(baked_index_b));
+							indices.push_back(static_cast<uint32_t>(baked_index_c));
+						};
+
 						if (strip.flags & VTX::Strip::FLAG_IS_TRILIST) {
 							for (int i = 0; i < strip.indices.size(); i += 3) {
-								append_triangle(strip.indices[i], strip.indices[i + 2], strip.indices[i + 1]);
+								append_triangle(strip.indices[i], strip.indices[i + 1], strip.indices[i + 2]);
 							}
-						} else {
-							for (int i = static_cast<int>(strip.indices.size()) - 1; i >= 2; i -= 3) {
-								append_triangle(strip.indices[static_cast<size_t>(i)], strip.indices[static_cast<size_t>(i - 2)], strip.indices[static_cast<size_t>(i - 1)]);
+						} else if (strip.flags & VTX::Strip::FLAG_IS_TRISTRIP) {
+							for (int i = 2; i < static_cast<int>(strip.indices.size()); i++) {
+								const uint16_t index_a = strip.indices[static_cast<size_t>(i - 2)];
+								const uint16_t index_b = strip.indices[static_cast<size_t>(i - 1)];
+								const uint16_t index_c = strip.indices[static_cast<size_t>(i)];
+
+								// Skip degenerate strip steps that intentionally repeat vertices.
+								if (index_a == index_b || index_b == index_c || index_a == index_c) {
+									continue;
+								}
+
+								if (((i - 2) & 1) == 0) {
+									append_triangle(index_a, index_b, index_c);
+								} else {
+									append_triangle(index_b, index_a, index_c);
+								}
 							}
 						}
 					}

@@ -54,8 +54,19 @@ Vector3 _to_vector3(const sourcepp::math::Vec3f &p_vector) {
 	return Vector3(p_vector[0], p_vector[1], p_vector[2]);
 }
 
+Quaternion _sanitize_quaternion(const Quaternion &p_quaternion) {
+	if (!p_quaternion.is_finite()) {
+		return Quaternion();
+	}
+	const real_t length_squared = p_quaternion.length_squared();
+	if (Math::is_zero_approx(length_squared)) {
+		return Quaternion();
+	}
+	return p_quaternion.is_normalized() ? p_quaternion : p_quaternion.normalized();
+}
+
 Quaternion _to_quaternion(const sourcepp::math::Quat &p_quaternion) {
-	return Quaternion(p_quaternion[0], p_quaternion[1], p_quaternion[2], p_quaternion[3]);
+	return _sanitize_quaternion(Quaternion(p_quaternion[0], p_quaternion[1], p_quaternion[2], p_quaternion[3]));
 }
 
 String _from_utf8(const std::string &p_string) {

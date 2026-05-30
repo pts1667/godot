@@ -6,7 +6,7 @@
 	<description>
 		[SourcePPMDL] exposes a first-cut wrapper over SourcePP's MDL support for scripts.
 		It opens a model from the required [code].mdl[/code], [code].vtx[/code], and [code].vvd[/code] files, exposes basic metadata, and can bake the chosen LOD into a Godot [ArrayMesh] with tangent and four-weight skinning data. The wrapper can also build a matching [Skin] resource and a detached [Skeleton3D] node from the parsed MDL rest pose.
-		[method create_model_node] assembles those pieces into a ready-to-instance scene subtree with one [MeshInstance3D] per MDL LOD, a shared [Skeleton3D], a configured [SourceAnimPlayer], resolved materials, and optional attachment nodes.
+		[method create_model_node] assembles those pieces into a ready-to-instance scene subtree with one [MeshInstance3D] per MDL LOD, a shared [Skeleton3D], a configured [SourceAnimPlayer], resolved materials, optional attachment nodes, and imported collision bodies.
 		If the model references external Source animation blocks, [method open] tries to resolve the companion [code].ani[/code] blob automatically and [method open_from_buffer] can accept it explicitly.
 		If [param vtx_path] or [param vvd_path] are omitted when calling [method open], the wrapper tries to resolve common companion filenames next to the MDL automatically.
 		[codeblock]
@@ -42,9 +42,10 @@
 			<return type="Node3D" />
 			<param index="0" name="skin_family" type="int" default="0" />
 			<param index="1" name="include_attachments" type="bool" default="true" />
+			<param index="2" name="include_collision" type="bool" default="true" />
 			<description>
 				Builds a ready-to-instance [Node3D] subtree for the currently loaded model. The returned root contains a [Skeleton3D], a configured [SourceAnimPlayer], and one skinned [MeshInstance3D] per available MDL LOD. These mesh instances are configured with chained visibility ranges so Godot can switch between artist-authored MDL LODs using [GeometryInstance3D]'s visibility-range system.
-				If [param include_attachments] is [code]true[/code], MDL attachments are added as [BoneAttachment3D] children under the generated skeleton. The returned root stores import metadata such as skin family, source paths, material names, sequence names, LOD count, and the visibility-range heuristic used for generated LOD transitions.
+				If [param include_attachments] is [code]true[/code], MDL attachments are added as [BoneAttachment3D] children under the generated skeleton. If [param include_collision] is [code]true[/code], the importer first tries to load a companion [code].phy[/code] file and converts its IVPS convex solids into [AnimatableBody3D] followers with [ConvexPolygonShape3D] children, attaching them to the matching skeleton bones when the PHY metadata names a bone. If no usable PHY data is available, it falls back to synthesizing box-shaped collision followers for collision-relevant bones from the visible LOD0 mesh in rest pose. The returned root stores import metadata such as skin family, source paths, material names, sequence names, collision source details, LOD count, and the visibility-range heuristic used for generated LOD transitions.
 			</description>
 		</method>
 		<method name="create_skin">
