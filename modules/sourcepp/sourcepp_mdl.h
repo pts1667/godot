@@ -58,30 +58,30 @@ class SourcePPMDL : public RefCounted {
 	Error _open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<uint8_t> &p_vtx_data, const Vector<uint8_t> &p_vvd_data, const Vector<uint8_t> &p_anim_block_data = Vector<uint8_t>());
 	Error _get_baked_model(int p_lod, mdlpp::BakedModel &r_baked_model) const;
 
-	mdlpp::StudioModel *get_model();
-	const mdlpp::StudioModel *get_model() const;
+	mdlpp::StudioModel *get_model() { return model.get(); }
+	const mdlpp::StudioModel *get_model() const { return model.get(); }
 
 public:
 	SourcePPMDL();
 	~SourcePPMDL() override;
 
-	void set_resolver(const Ref<SourcePPResolver> &p_resolver);
-	Ref<SourcePPResolver> get_resolver() const;
-	void set_resolver_game_id(const String &p_game_id);
-	String get_resolver_game_id() const;
+	void set_resolver(const Ref<SourcePPResolver> &p_resolver) { resolver = p_resolver; }
+	Ref<SourcePPResolver> get_resolver() const { return resolver; }
+	void set_resolver_game_id(const String &p_game_id) { resolver_game_id = p_game_id.strip_edges().to_lower(); }
+	String get_resolver_game_id() const { return resolver_game_id; }
 
 	Error open(const String &p_mdl_path, const String &p_vtx_path = String(), const String &p_vvd_path = String());
 	Error open_from_buffer(const PackedByteArray &p_mdl_data, const PackedByteArray &p_vtx_data, const PackedByteArray &p_vvd_data, const PackedByteArray &p_anim_block_data = PackedByteArray());
 	void close();
-	bool is_open() const;
+	bool is_open() const { return model != nullptr; }
 
 	String get_name() const;
 	int get_version() const;
 	int get_checksum() const;
 	int get_lod_count() const;
-	String get_mdl_path() const;
-	String get_vtx_path() const;
-	String get_vvd_path() const;
+	String get_mdl_path() const { return mdl_path; }
+	String get_vtx_path() const { return vtx_path; }
+	String get_vvd_path() const { return vvd_path; }
 
 	PackedStringArray get_materials() const;
 	PackedStringArray get_material_directories() const;

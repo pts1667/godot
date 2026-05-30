@@ -22,16 +22,12 @@
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/3d/skeleton_3d.h"
 #include "scene/resources/3d/box_shape_3d.h"
-#include "scene/resources/3d/convex_polygon_shape_3d.h"
 #include "scene/resources/material.h"
 
 #include <mdlpp/mdlpp.h>
 
 #include <algorithm>
-#include <cctype>
-#include <cstdint>
 #include <cstring>
-#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -226,30 +222,9 @@ String _build_scene_name(const String &p_name, const String &p_path) {
 	return scene_name.is_empty() ? String("SourcePPMDL") : scene_name;
 }
 
-constexpr float PHY_METERS_TO_SOURCE_UNITS = 39.37007874015748f;
-
-Vector3 _convert_phy_position(float p_x, float p_y, float p_z) {
-	return Vector3(p_x, p_z, -p_y) * PHY_METERS_TO_SOURCE_UNITS;
-}
-
-struct CollisionBoxSpec {
-	int bone = -1;
-	String bone_name;
-	String name;
-	Transform3D transform;
-	Vector3 size;
-};
-
-enum class CollisionShapeKind {
-	BOX,
-	CONVEX,
-};
-
 struct CollisionShapeSpec {
-	CollisionShapeKind kind = CollisionShapeKind::BOX;
 	Transform3D transform;
 	Vector3 size;
-	Vector<Vector3> points;
 };
 
 struct CollisionBodySpec {
@@ -271,391 +246,6 @@ struct ModelBindingInfo {
 	ModelBindingMode mode = ModelBindingMode::MODEL_SPACE;
 	int bone = -1;
 };
-
-struct PhyFileHeader {
-	int32_t size = 0;
-	int32_t id = 0;
-	int32_t solid_count = 0;
-	int32_t checksum = 0;
-};
-
-struct PhyCollideHeader {
-	int32_t size = 0;
-	int32_t vphysics_id = 0;
-	int16_t version = 0;
-	int16_t model_type = 0;
-};
-
-struct PhyCompactSurfaceHeader {
-	int32_t surface_size = 0;
-	float drag_axis_areas[3]{};
-	int32_t axis_map_size = 0;
-};
-
-struct PhyCompactSurface {
-	float mass_center[3]{};
-	float rotation_inertia[3]{};
-	float upper_limit_radius = 0.0f;
-	int32_t packed_size = 0;
-	int32_t offset_ledgetree_root = 0;
-	int32_t dummy[3]{};
-};
-
-struct PhyCompactLedge {
-	int32_t c_point_offset = 0;
-	int32_t client_data = 0;
-	uint32_t packed_flags = 0;
-	int16_t triangle_count = 0;
-	int16_t reserved = 0;
-};
-
-struct PhyCompactTriangle {
-	uint32_t packed_flags = 0;
-	uint32_t packed_edges[3]{};
-};
-
-struct PhyCompactLedgeNode {
-	int32_t offset_right_node = 0;
-	int32_t offset_compact_ledge = 0;
-	float center[3]{};
-	float radius = 0.0f;
-	uint8_t box_sizes[3]{};
-	uint8_t free_0 = 0;
-};
-
-struct PhyKeyValuesInfo {
-	std::unordered_map<int, String> solid_bone_names;
-	String root_bone_name;
-};
-
-constexpr uint32_t _make_fourcc(char p_a, char p_b, char p_c, char p_d) {
-	return static_cast<uint32_t>(static_cast<uint8_t>(p_a)) |
-			(static_cast<uint32_t>(static_cast<uint8_t>(p_b)) << 8) |
-			(static_cast<uint32_t>(static_cast<uint8_t>(p_c)) << 16) |
-			(static_cast<uint32_t>(static_cast<uint8_t>(p_d)) << 24);
-}
-
-template <typename T>
-bool _read_phy_struct(const Vector<uint8_t> &p_bytes, size_t p_offset, T &r_value) {
-	if (p_offset + sizeof(T) > static_cast<size_t>(p_bytes.size())) {
-		return false;
-	}
-	std::memcpy(&r_value, p_bytes.ptr() + p_offset, sizeof(T));
-	return true;
-}
-
-void _skip_phy_keyvalues_whitespace(std::string_view p_text, size_t &r_offset) {
-	while (r_offset < p_text.size()) {
-		const char current = p_text[r_offset];
-		if (std::isspace(static_cast<unsigned char>(current))) {
-			r_offset++;
-			continue;
-		}
-		if (current == '/' && r_offset + 1 < p_text.size() && p_text[r_offset + 1] == '/') {
-			r_offset += 2;
-			while (r_offset < p_text.size() && p_text[r_offset] != '\n') {
-				r_offset++;
-			}
-			continue;
-		}
-		break;
-	}
-}
-
-bool _read_phy_keyvalues_token(std::string_view p_text, size_t &r_offset, std::string &r_token) {
-	_skip_phy_keyvalues_whitespace(p_text, r_offset);
-	if (r_offset >= p_text.size()) {
-		return false;
-	}
-
-	const char current = p_text[r_offset];
-	if (current == '{' || current == '}') {
-		r_token.assign(1, current);
-		r_offset++;
-		return true;
-	}
-
-	if (current == '"') {
-		r_offset++;
-		r_token.clear();
-		while (r_offset < p_text.size()) {
-			const char value = p_text[r_offset++];
-			if (value == '"') {
-				break;
-			}
-			if (value == '\\' && r_offset < p_text.size()) {
-				r_token.push_back(p_text[r_offset++]);
-				continue;
-			}
-			r_token.push_back(value);
-		}
-		return true;
-	}
-
-	const size_t token_start = r_offset;
-	while (r_offset < p_text.size()) {
-		const char value = p_text[r_offset];
-		if (std::isspace(static_cast<unsigned char>(value)) || value == '{' || value == '}') {
-			break;
-		}
-		r_offset++;
-	}
-	r_token = std::string(p_text.substr(token_start, r_offset - token_start));
-	return !r_token.empty();
-}
-
-PhyKeyValuesInfo _parse_phy_keyvalues(const Vector<uint8_t> &p_bytes, size_t p_offset) {
-	PhyKeyValuesInfo info;
-	if (p_offset >= static_cast<size_t>(p_bytes.size())) {
-		return info;
-	}
-
-	std::string text(reinterpret_cast<const char *>(p_bytes.ptr() + p_offset), p_bytes.size() - static_cast<int>(p_offset));
-	const size_t terminator = text.find('\0');
-	if (terminator != std::string::npos) {
-		text.resize(terminator);
-	}
-
-	size_t offset = 0;
-	std::string block_type;
-	std::string token;
-	while (_read_phy_keyvalues_token(text, offset, block_type)) {
-		if (!_read_phy_keyvalues_token(text, offset, token) || token != "{") {
-			break;
-		}
-
-		std::unordered_map<std::string, std::string> properties;
-		std::string key;
-		std::string value;
-		while (_read_phy_keyvalues_token(text, offset, key)) {
-			if (key == "}") {
-				break;
-			}
-			if (!_read_phy_keyvalues_token(text, offset, value)) {
-				break;
-			}
-			if (value == "{") {
-				int depth = 1;
-				std::string nested_token;
-				while (depth > 0 && _read_phy_keyvalues_token(text, offset, nested_token)) {
-					if (nested_token == "{") {
-						depth++;
-					} else if (nested_token == "}") {
-						depth--;
-					}
-				}
-				continue;
-			}
-			properties[key] = value;
-		}
-
-		if (block_type == "solid") {
-			const auto index_it = properties.find("index");
-			const auto name_it = properties.find("name");
-			if (index_it != properties.end() && name_it != properties.end()) {
-				info.solid_bone_names[std::atoi(index_it->second.c_str())] = String::utf8(name_it->second.c_str());
-			}
-		} else if (block_type == "editparams") {
-			if (const auto root_it = properties.find("rootname"); root_it != properties.end()) {
-				info.root_bone_name = String::utf8(root_it->second.c_str());
-			}
-		}
-	}
-
-	return info;
-}
-
-int _find_bone_index_by_name(const mdlpp::StudioModel *p_model, const String &p_bone_name) {
-	if (p_model == nullptr || p_bone_name.is_empty()) {
-		return -1;
-	}
-
-	const String normalized_name = p_bone_name.strip_edges().to_lower();
-	for (int bone_index = 0; bone_index < static_cast<int>(p_model->mdl.bones.size()); bone_index++) {
-		if (_get_bone_track_name(p_model, bone_index).to_lower() == normalized_name) {
-			return bone_index;
-		}
-	}
-	return -1;
-}
-
-bool _collect_phy_ledges(const Vector<uint8_t> &p_bytes, size_t p_node_offset, Vector<size_t> &r_ledge_offsets) {
-	PhyCompactLedgeNode node;
-	if (!_read_phy_struct(p_bytes, p_node_offset, node)) {
-		return false;
-	}
-
-	if (node.offset_right_node == 0) {
-		const int64_t ledge_offset = static_cast<int64_t>(p_node_offset) + static_cast<int64_t>(node.offset_compact_ledge);
-		if (ledge_offset < 0 || ledge_offset >= p_bytes.size()) {
-			return false;
-		}
-		r_ledge_offsets.push_back(static_cast<size_t>(ledge_offset));
-		return true;
-	}
-
-	const size_t left_offset = p_node_offset + sizeof(PhyCompactLedgeNode);
-	const int64_t right_offset = static_cast<int64_t>(p_node_offset) + static_cast<int64_t>(node.offset_right_node);
-	if (right_offset < 0 || right_offset >= p_bytes.size()) {
-		return false;
-	}
-	return _collect_phy_ledges(p_bytes, static_cast<size_t>(right_offset), r_ledge_offsets) &&
-			_collect_phy_ledges(p_bytes, left_offset, r_ledge_offsets);
-}
-
-Vector<Vector3> _build_phy_convex_points(const Vector<uint8_t> &p_bytes, size_t p_ledge_offset) {
-	Vector<Vector3> points;
-	PhyCompactLedge ledge;
-	if (!_read_phy_struct(p_bytes, p_ledge_offset, ledge) || ledge.triangle_count <= 0 || ledge.c_point_offset <= 0) {
-		return points;
-	}
-
-	std::vector<uint16_t> unique_indices;
-	unique_indices.reserve(static_cast<size_t>(ledge.triangle_count) * 3);
-	const size_t triangles_offset = p_ledge_offset + sizeof(PhyCompactLedge);
-	for (int triangle_index = 0; triangle_index < ledge.triangle_count; triangle_index++) {
-		PhyCompactTriangle triangle;
-		if (!_read_phy_struct(p_bytes, triangles_offset + sizeof(PhyCompactTriangle) * static_cast<size_t>(triangle_index), triangle)) {
-			return Vector<Vector3>();
-		}
-
-		for (int edge_index = 0; edge_index < 3; edge_index++) {
-			const uint16_t point_index = static_cast<uint16_t>(triangle.packed_edges[edge_index] & 0xFFFFu);
-			if (std::find(unique_indices.begin(), unique_indices.end(), point_index) == unique_indices.end()) {
-				unique_indices.push_back(point_index);
-			}
-		}
-	}
-
-	points.resize(static_cast<int>(unique_indices.size()));
-	const size_t points_offset = p_ledge_offset + static_cast<size_t>(ledge.c_point_offset);
-	for (int point_list_index = 0; point_list_index < points.size(); point_list_index++) {
-		const size_t vertex_offset = points_offset + static_cast<size_t>(unique_indices[static_cast<size_t>(point_list_index)]) * 16;
-		float vertex[4]{};
-		if (vertex_offset + sizeof(vertex) > static_cast<size_t>(p_bytes.size())) {
-			return Vector<Vector3>();
-		}
-		std::memcpy(vertex, p_bytes.ptr() + vertex_offset, sizeof(vertex));
-		points.write[point_list_index] = _convert_phy_position(vertex[0], vertex[1], vertex[2]);
-	}
-
-	return points;
-}
-
-Vector<CollisionBodySpec> _build_phy_collision_bodies(const mdlpp::StudioModel *p_model, const Vector<uint8_t> &p_phy_data) {
-	Vector<CollisionBodySpec> specs;
-	PhyFileHeader header;
-	if (p_model == nullptr || !_read_phy_struct(p_phy_data, 0, header) || header.size != static_cast<int32_t>(sizeof(PhyFileHeader)) || header.solid_count <= 0) {
-		return specs;
-	}
-
-	const Vector<Transform3D> global_rests = _build_global_bone_rests(p_model);
-	Vector<Transform3D> inverse_global_rests;
-	inverse_global_rests.resize(global_rests.size());
-	for (int bone_index = 0; bone_index < inverse_global_rests.size(); bone_index++) {
-		inverse_global_rests.write[bone_index] = global_rests[bone_index].affine_inverse();
-	}
-
-	const size_t header_offset = sizeof(PhyFileHeader);
-	size_t keyvalues_offset = header_offset;
-	for (int solid_index = 0; solid_index < header.solid_count; solid_index++) {
-		PhyCollideHeader collide_header;
-		if (!_read_phy_struct(p_phy_data, keyvalues_offset, collide_header) || collide_header.size <= 0) {
-			return Vector<CollisionBodySpec>();
-		}
-		keyvalues_offset += static_cast<size_t>(collide_header.size) + sizeof(int32_t);
-		if (keyvalues_offset > static_cast<size_t>(p_phy_data.size())) {
-			return Vector<CollisionBodySpec>();
-		}
-	}
-	const PhyKeyValuesInfo keyvalues = _parse_phy_keyvalues(p_phy_data, keyvalues_offset);
-	const uint32_t vphysics_id = _make_fourcc('V', 'P', 'H', 'Y');
-	const uint32_t ivps_id = _make_fourcc('I', 'V', 'P', 'S');
-
-	size_t solid_offset = header_offset;
-	for (int solid_index = 0; solid_index < header.solid_count; solid_index++) {
-		PhyCollideHeader collide_header;
-		if (!_read_phy_struct(p_phy_data, solid_offset, collide_header) || collide_header.size <= 0) {
-			return Vector<CollisionBodySpec>();
-		}
-
-		const size_t next_solid_offset = solid_offset + static_cast<size_t>(collide_header.size) + sizeof(int32_t);
-		if (next_solid_offset > static_cast<size_t>(p_phy_data.size())) {
-			return Vector<CollisionBodySpec>();
-		}
-
-		if (collide_header.vphysics_id != static_cast<int32_t>(vphysics_id) || collide_header.version != 0x100 || collide_header.model_type != 0) {
-			solid_offset = next_solid_offset;
-			continue;
-		}
-
-		PhyCompactSurfaceHeader compact_header;
-		PhyCompactSurface surface;
-		const size_t compact_header_offset = solid_offset + sizeof(PhyCollideHeader);
-		const size_t surface_offset = compact_header_offset + sizeof(PhyCompactSurfaceHeader);
-		if (!_read_phy_struct(p_phy_data, compact_header_offset, compact_header) || !_read_phy_struct(p_phy_data, surface_offset, surface)) {
-			return Vector<CollisionBodySpec>();
-		}
-		if (surface.dummy[2] != static_cast<int32_t>(ivps_id) || surface.offset_ledgetree_root <= 0) {
-			solid_offset = next_solid_offset;
-			continue;
-		}
-
-		Vector<size_t> ledge_offsets;
-		const size_t root_node_offset = surface_offset + static_cast<size_t>(surface.offset_ledgetree_root);
-		if (!_collect_phy_ledges(p_phy_data, root_node_offset, ledge_offsets)) {
-			return Vector<CollisionBodySpec>();
-		}
-
-		CollisionBodySpec spec;
-		spec.source = "phy";
-		spec.name = vformat("CollisionSolid_%d", solid_index);
-		if (const auto name_it = keyvalues.solid_bone_names.find(solid_index); name_it != keyvalues.solid_bone_names.end()) {
-			spec.bone_name = name_it->second;
-			spec.name = vformat("Collision_%s", spec.bone_name);
-		}
-		spec.bone = _find_bone_index_by_name(p_model, spec.bone_name);
-		if (spec.bone < 0 && header.solid_count == 1) {
-			if (!keyvalues.root_bone_name.is_empty()) {
-				spec.bone_name = keyvalues.root_bone_name;
-				spec.bone = _find_bone_index_by_name(p_model, spec.bone_name);
-			}
-		}
-
-		const Vector3 model_mass_center = _convert_phy_position(surface.mass_center[0], surface.mass_center[1], surface.mass_center[2]);
-		const Transform3D bone_space = (spec.bone >= 0 && spec.bone < inverse_global_rests.size()) ? inverse_global_rests[spec.bone] : Transform3D();
-		const Vector3 local_mass_center = (spec.bone >= 0 && spec.bone < inverse_global_rests.size()) ? bone_space.xform(model_mass_center) : model_mass_center;
-		for (int ledge_index = 0; ledge_index < ledge_offsets.size(); ledge_index++) {
-			Vector<Vector3> convex_points = _build_phy_convex_points(p_phy_data, ledge_offsets[ledge_index]);
-			if (convex_points.size() < 3) {
-				continue;
-			}
-			if (spec.bone >= 0 && spec.bone < inverse_global_rests.size()) {
-				for (int point_index = 0; point_index < convex_points.size(); point_index++) {
-					convex_points.write[point_index] = bone_space.xform(convex_points[point_index]);
-				}
-			}
-
-			CollisionShapeSpec shape_spec;
-			shape_spec.kind = CollisionShapeKind::CONVEX;
-			shape_spec.transform.origin = -local_mass_center;
-			shape_spec.points = convex_points;
-			spec.shapes.push_back(shape_spec);
-		}
-
-		if (!spec.shapes.is_empty()) {
-			String validated_name = spec.name.validate_node_name();
-			if (!validated_name.is_empty()) {
-				spec.name = validated_name;
-			}
-			specs.push_back(spec);
-		}
-
-		solid_offset = next_solid_offset;
-	}
-
-	return specs;
-}
 
 struct CollisionBoundsAccumulator {
 	bool valid = false;
@@ -825,7 +415,6 @@ Vector<CollisionBodySpec> _build_generated_collision_boxes(const mdlpp::StudioMo
 		body_spec.transform.origin = (bone_bounds.min + bone_bounds.max) * 0.5f;
 
 		CollisionShapeSpec shape_spec;
-		shape_spec.kind = CollisionShapeKind::BOX;
 		shape_spec.size = box_size;
 		body_spec.shapes.push_back(shape_spec);
 		specs.push_back(body_spec);
@@ -844,7 +433,6 @@ Vector<CollisionBodySpec> _build_generated_collision_boxes(const mdlpp::StudioMo
 		body_spec.transform.origin = (unweighted_bounds.min + unweighted_bounds.max) * 0.5f;
 
 		CollisionShapeSpec shape_spec;
-		shape_spec.kind = CollisionShapeKind::BOX;
 		shape_spec.size = box_size;
 		body_spec.shapes.push_back(shape_spec);
 		specs.push_back(body_spec);
@@ -874,21 +462,12 @@ int _append_collision_bodies(Node3D *p_root, Skeleton3D *p_skeleton, const Vecto
 			CollisionShape3D *collision_shape = memnew(CollisionShape3D);
 			collision_shape->set_name(vformat("CollisionShape3D_%d", shape_index));
 			collision_shape->set_transform(shape_spec.transform);
-			if (shape_spec.kind == CollisionShapeKind::BOX) {
-				Ref<BoxShape3D> box_shape;
-				box_shape.instantiate();
-				box_shape->set_size(shape_spec.size);
-				collision_shape->set_shape(box_shape);
-				collision_shape->set_meta("sourcepp_collision_shape_type", "box");
-				collision_shape->set_meta("sourcepp_collision_shape_size", shape_spec.size);
-			} else {
-				Ref<ConvexPolygonShape3D> convex_shape;
-				convex_shape.instantiate();
-				convex_shape->set_points(shape_spec.points);
-				collision_shape->set_shape(convex_shape);
-				collision_shape->set_meta("sourcepp_collision_shape_type", "convex");
-				collision_shape->set_meta("sourcepp_collision_point_count", shape_spec.points.size());
-			}
+			Ref<BoxShape3D> box_shape;
+			box_shape.instantiate();
+			box_shape->set_size(shape_spec.size);
+			collision_shape->set_shape(box_shape);
+			collision_shape->set_meta("sourcepp_collision_shape_type", "box");
+			collision_shape->set_meta("sourcepp_collision_shape_size", shape_spec.size);
 			collision_body->add_child(collision_shape);
 			created_shape_count++;
 		}
@@ -1107,30 +686,6 @@ Error SourcePPMDL::_get_baked_model(int p_lod, mdlpp::BakedModel &r_baked_model)
 	return OK;
 }
 
-mdlpp::StudioModel *SourcePPMDL::get_model() {
-	return model.get();
-}
-
-const mdlpp::StudioModel *SourcePPMDL::get_model() const {
-	return model.get();
-}
-
-void SourcePPMDL::set_resolver(const Ref<SourcePPResolver> &p_resolver) {
-	resolver = p_resolver;
-}
-
-Ref<SourcePPResolver> SourcePPMDL::get_resolver() const {
-	return resolver;
-}
-
-void SourcePPMDL::set_resolver_game_id(const String &p_game_id) {
-	resolver_game_id = p_game_id.strip_edges().to_lower();
-}
-
-String SourcePPMDL::get_resolver_game_id() const {
-	return resolver_game_id;
-}
-
 Error SourcePPMDL::open(const String &p_mdl_path, const String &p_vtx_path, const String &p_vvd_path) {
 	close();
 	ERR_FAIL_COND_V_MSG(p_mdl_path.is_empty(), ERR_INVALID_PARAMETER, "MDL path must not be empty.");
@@ -1209,10 +764,6 @@ void SourcePPMDL::close() {
 	anim_block_data_cache.clear();
 }
 
-bool SourcePPMDL::is_open() const {
-	return model != nullptr;
-}
-
 String SourcePPMDL::get_name() const {
 	ERR_FAIL_COND_V_MSG(get_model() == nullptr, String(), "SourcePPMDL must be opened before use.");
 	return _from_utf8(get_model()->mdl.name);
@@ -1231,18 +782,6 @@ int SourcePPMDL::get_checksum() const {
 int SourcePPMDL::get_lod_count() const {
 	ERR_FAIL_COND_V_MSG(get_model() == nullptr, 0, "SourcePPMDL must be opened before use.");
 	return get_model()->vtx.numLODs;
-}
-
-String SourcePPMDL::get_mdl_path() const {
-	return mdl_path;
-}
-
-String SourcePPMDL::get_vtx_path() const {
-	return vtx_path;
-}
-
-String SourcePPMDL::get_vvd_path() const {
-	return vvd_path;
 }
 
 PackedStringArray SourcePPMDL::get_materials() const {

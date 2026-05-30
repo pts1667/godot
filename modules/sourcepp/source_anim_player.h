@@ -130,11 +130,11 @@ class SourceAnimPlayer : public Node {
 	float set_controller_ranged_value(int p_input_field, float p_value);
 	float get_controller_ranged_value(int p_input_field) const;
 	void set_ik_enabled(bool p_enabled);
-	bool is_ik_enabled() const;
+	bool is_ik_enabled() const { return ik_enabled; }
 	void set_speed_scale(float p_speed_scale);
-	float get_speed_scale() const;
+	float get_speed_scale() const { return speed_scale; }
 	void set_current_time(double p_time);
-	double get_current_time() const;
+	double get_current_time() const { return playback_time; }
 
 	virtual PackedStringArray get_configuration_warnings() const override;
 
@@ -143,18 +143,17 @@ public:
 	~SourceAnimPlayer() override;
 
 	void set_resolver(const Ref<SourcePPResolver> &p_resolver);
-	Ref<SourcePPResolver> get_resolver() const;
+	Ref<SourcePPResolver> get_resolver() const { return resolver; }
 	void set_resolver_game_id(const String &p_game_id);
-	String get_resolver_game_id() const;
+	String get_resolver_game_id() const { return resolver_game_id; }
 
 	Error open(const String &p_mdl_path, const String &p_vtx_path = String(), const String &p_vvd_path = String());
 	Error open_from_buffer(const PackedByteArray &p_mdl_data, const PackedByteArray &p_vtx_data, const PackedByteArray &p_vvd_data, const PackedByteArray &p_anim_block_data = PackedByteArray());
 	void close();
-	bool is_open() const;
-
-	String get_mdl_path() const;
-	String get_vtx_path() const;
-	String get_vvd_path() const;
+	bool is_open() const { return model != nullptr; }
+	String get_mdl_path() const { return mdl_path; }
+	String get_vtx_path() const { return vtx_path; }
+	String get_vvd_path() const { return vvd_path; }
 	int get_bone_controller_count() const;
 	Array get_bone_controllers() const;
 	int get_sequence_count() const;
@@ -168,5 +167,5 @@ public:
 	void stop(bool p_reset = false);
 	void seek(double p_time, bool p_update = true);
 	void advance(double p_delta);
-	bool is_playing() const;
+	bool is_playing() const { return playing; }
 };
