@@ -8,6 +8,8 @@
 #include <utility>
 
 #include <FileStream.h>
+#include <sourcepp/FS.h>
+#include <sourcepp/Macros.h>
 #include <sourcepp/compression/LZMA.h>
 
 using namespace bsppp;

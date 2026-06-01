@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPBSP" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Loads Source BSP brush geometry into [HalfEdgeMesh] data.
+	</brief_description>
+	<description>
+		[SourcePPBSP] exposes a first-cut wrapper over SourcePP's BSP reader for Source engine maps.
+		It currently focuses on brush-model surface extraction for later import work: it can open a BSP, list the discovered materials, build a [HalfEdgeMesh] for one brush model, and return the face-to-material ID map aligned with that generated mesh.
+		Displacement surfaces are skipped for now.
+		Returned vertices are converted from Source inches and axes into Godot meters and orientation.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="close">
+			<return type="void" />
+			<description>
+				Releases the currently loaded BSP and all cached parsed data.
+			</description>
+		</method>
+		<method name="create_halfedge_mesh">
+			<return type="HalfEdgeMesh" />
+			<param index="0" name="model_index" type="int" default="0" />
+			<description>
+				Builds a [HalfEdgeMesh] for the requested BSP brush model.
+				Model [code]0[/code] is the world brush model in standard Source BSP files.
+				Faces with displacement data are ignored.
+				Use [method get_face_material_ids] to map the resulting mesh faces back to [method get_material_paths].
+			</description>
+		</method>
+		<method name="get_face_material_ids">
+			<return type="PackedInt32Array" />
+			<param index="0" name="model_index" type="int" default="0" />
+			<description>
+				Returns one material ID per face in the mesh produced by [method create_halfedge_mesh] for the same [param model_index].
+				Each ID indexes [method get_material_paths]. Faces without a resolved material return [code]-1[/code].
+			</description>
+		</method>
+		<method name="get_map_revision">
+			<return type="int" />
+		</method>
+		<method name="get_material_paths">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the unique BSP material paths referenced by the currently loaded map. Face material IDs index this array.
+			</description>
+		</method>
+		<method name="get_model_count">
+			<return type="int" />
+			<description>
+				Returns the number of brush models stored in the BSP.
+			</description>
+		</method>
+		<method name="get_path">
+			<return type="String" />
+		</method>
+		<method name="get_version">
+			<return type="int" />
+		</method>
+		<method name="is_open">
+			<return type="bool" />
+		</method>
+		<method name="open">
+			<return type="int" enum="Error" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Opens a BSP file from disk and caches the brush-model geometry, texture info, and material table needed for mesh extraction.
+			</description>
+		</method>
+	</methods>
+	<members>
+	</members>
+</class>

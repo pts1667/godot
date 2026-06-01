@@ -13,7 +13,6 @@
 
 #include "EntityLump.h"
 #include "LumpData.h"
-#include "PakLump.h"
 
 namespace bsppp {
 

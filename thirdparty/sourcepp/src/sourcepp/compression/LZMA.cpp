@@ -1,5 +1,6 @@
 #include <sourcepp/compression/LZMA.h>
 
+#include <algorithm>
 #include <BufferStream.h>
 #include <lzma.h>
 

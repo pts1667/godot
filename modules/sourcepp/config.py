@@ -1,4 +1,5 @@
 def can_build(env, platform):
+    env.module_add_dependencies("sourcepp", ["halfedge"])
     return True
 
 
@@ -9,6 +10,7 @@ def configure(env):
 def get_doc_classes():
     return [
         "SourceAnimPlayer",
+        "SourcePPBSP",
         "SourcePPMDL",
         "SourcePPResolver",
         "SourcePPVMT",
