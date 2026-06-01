@@ -123,14 +123,13 @@ bool _simplify_bsp_polygon(const PackedVector3Array &p_vertices, PackedInt32Arra
 	return true;
 }
 
-bool _is_halfedge_compatible_polygon(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon) {
+bool _project_bsp_polygon(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon, PackedVector2Array &r_projected_vertices) {
 	Plane plane;
 	if (!_compute_polygon_plane(p_vertices, p_polygon, plane)) {
 		return false;
 	}
 
-	PackedVector2Array projected_vertices;
-	projected_vertices.resize(p_polygon.size());
+	r_projected_vertices.resize(p_polygon.size());
 	const Vector3 normal = plane.normal.normalized();
 	const Vector3 reference = Math::abs(normal.dot(Vector3(0, 1, 0))) < 0.999f ? Vector3(0, 1, 0) : Vector3(1, 0, 0);
 	const Vector3 tangent = normal.cross(reference).normalized();
@@ -141,18 +140,43 @@ bool _is_halfedge_compatible_polygon(const PackedVector3Array &p_vertices, const
 		if (Math::abs(plane.distance_to(vertex)) > BSP_HALFEDGE_COPLANAR_EPSILON) {
 			return false;
 		}
-		projected_vertices.set(i, Vector2(tangent.dot(vertex), bitangent.dot(vertex)));
+		r_projected_vertices.set(i, Vector2(tangent.dot(vertex), bitangent.dot(vertex)));
+	}
+
+	return true;
+}
+
+bool _is_halfedge_compatible_polygon(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon) {
+	PackedVector2Array projected_vertices;
+	if (!_project_bsp_polygon(p_vertices, p_polygon, projected_vertices)) {
+		return false;
 	}
 
 	return !Geometry2D::triangulate_polygon(projected_vertices).is_empty();
 }
 
-void _append_triangle_fan(const PackedInt32Array &p_polygon, int p_material_id, Array &r_faces, PackedInt32Array &r_face_material_ids) {
-	for (int i = 1; i < p_polygon.size() - 1; i++) {
+void _append_triangulated_polygon(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon, int p_material_id, Array &r_faces, PackedInt32Array &r_face_material_ids) {
+	PackedVector2Array projected_vertices;
+	if (!_project_bsp_polygon(p_vertices, p_polygon, projected_vertices)) {
+		return;
+	}
+
+	const PackedInt32Array triangulated_indices = Geometry2D::triangulate_polygon(projected_vertices);
+	for (int i = 0; i < triangulated_indices.size(); i += 3) {
+		if (i + 2 >= triangulated_indices.size()) {
+			break;
+		}
+
 		PackedInt32Array triangle;
-		triangle.push_back(p_polygon[0]);
-		triangle.push_back(p_polygon[i]);
-		triangle.push_back(p_polygon[i + 1]);
+		triangle.push_back(p_polygon[triangulated_indices[i]]);
+		triangle.push_back(p_polygon[triangulated_indices[i + 1]]);
+		triangle.push_back(p_polygon[triangulated_indices[i + 2]]);
+
+		Plane triangle_plane;
+		if (!_compute_polygon_plane(p_vertices, triangle, triangle_plane)) {
+			continue;
+		}
+
 		r_faces.push_back(triangle);
 		r_face_material_ids.push_back(p_material_id);
 	}
@@ -518,7 +542,6 @@ Error SourcePPBSP::_build_model_mesh_data(int p_model_index, PackedVector3Array 
 	ERR_FAIL_INDEX_V_MSG(p_model_index, static_cast<int>(bsp_models.size()), ERR_INVALID_PARAMETER, "Requested BSP brush model is out of range.");
 
 	const bsppp::BSPBrushModel &model = bsp_models[static_cast<size_t>(p_model_index)];
-	HashMap<int, int> vertex_remap;
 
 	for (int model_face_offset = 0; model_face_offset < model.numFaces; model_face_offset++) {
 		const int bsp_face_index = model.firstFace + model_face_offset;
@@ -532,6 +555,7 @@ Error SourcePPBSP::_build_model_mesh_data(int p_model_index, PackedVector3Array 
 		}
 
 		PackedInt32Array polygon;
+		HashMap<int, int> face_vertex_remap;
 		int previous_bsp_vertex_index = -1;
 		for (int face_edge_offset = 0; face_edge_offset < face.numEdges; face_edge_offset++) {
 			const int surf_edge_index = face.firstEdge + face_edge_offset;
@@ -560,14 +584,13 @@ Error SourcePPBSP::_build_model_mesh_data(int p_model_index, PackedVector3Array 
 			previous_bsp_vertex_index = bsp_vertex_index;
 
 			int mesh_vertex_index = -1;
-			if (vertex_remap.has(bsp_vertex_index)) {
-				mesh_vertex_index = vertex_remap[bsp_vertex_index];
+			if (face_vertex_remap.has(bsp_vertex_index)) {
+				mesh_vertex_index = face_vertex_remap[bsp_vertex_index];
 			} else {
 				mesh_vertex_index = r_vertices.size();
-				vertex_remap.insert(bsp_vertex_index, mesh_vertex_index);
+				face_vertex_remap.insert(bsp_vertex_index, mesh_vertex_index);
 				r_vertices.push_back(_source_to_godot_position(bsp_vertices[static_cast<size_t>(bsp_vertex_index)].position));
 			}
-
 			polygon.push_back(mesh_vertex_index);
 		}
 
@@ -583,7 +606,7 @@ Error SourcePPBSP::_build_model_mesh_data(int p_model_index, PackedVector3Array 
 			r_faces.push_back(polygon);
 			r_face_material_ids.push_back(material_id);
 		} else {
-			_append_triangle_fan(polygon, material_id, r_faces, r_face_material_ids);
+			_append_triangulated_polygon(r_vertices, polygon, material_id, r_faces, r_face_material_ids);
 		}
 	}
 
