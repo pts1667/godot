@@ -187,6 +187,10 @@ FileSystem::SearchPathMapDir& FileSystem::getSearchPathDirs() {
 	return this->searchPathDirs;
 }
 
+const std::string& FileSystem::getRootPath() const {
+	return this->rootPath;
+}
+
 const FileSystem::SearchPathMapVPK& FileSystem::getSearchPathVPKs() const {
 	return this->searchPathVPKs;
 }

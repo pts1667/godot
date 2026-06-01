@@ -5,7 +5,7 @@
 	</brief_description>
 	<description>
 		[SourcePPBSP] exposes a first-cut wrapper over SourcePP's BSP reader for Source engine maps.
-		It currently focuses on brush-model surface extraction for later import work: it can open a BSP, list the discovered materials, build a [HalfEdgeMesh] for one brush model, and return the face-to-material ID map aligned with that generated mesh.
+		It currently focuses on brush-model surface extraction for later import work: it can open a BSP, list the discovered materials, keep one editable [HalfEdgeMesh] and aligned face-material map as object state, and generate a renderable node from that current state.
 		Displacement surfaces are skipped for now.
 		Returned vertices are converted from Source inches and axes into Godot meters and orientation.
 	</description>
@@ -18,21 +18,18 @@
 				Releases the currently loaded BSP and all cached parsed data.
 			</description>
 		</method>
-		<method name="create_halfedge_mesh">
-			<return type="HalfEdgeMesh" />
-			<param index="0" name="model_index" type="int" default="0" />
+		<method name="create_node">
+			<return type="Node3D" />
 			<description>
-				Builds a [HalfEdgeMesh] for the requested BSP brush model.
-				Model [code]0[/code] is the world brush model in standard Source BSP files.
-				Faces with displacement data are ignored.
-				Use [method get_face_material_ids] to map the resulting mesh faces back to [method get_material_paths].
+				Creates a renderable 3D node from the current [member halfedge_mesh] and [member face_material_ids].
+				Faces are grouped into separate Godot mesh surfaces by material ID so each material can be assigned independently.
+				When a [member resolver] is assigned, referenced VMT and VTF files are loaded while creating the node.
 			</description>
 		</method>
 		<method name="get_face_material_ids">
 			<return type="PackedInt32Array" />
-			<param index="0" name="model_index" type="int" default="0" />
 			<description>
-				Returns one material ID per face in the mesh produced by [method create_halfedge_mesh] for the same [param model_index].
+				Returns one material ID per face in the current [member halfedge_mesh].
 				Each ID indexes [method get_material_paths]. Faces without a resolved material return [code]-1[/code].
 			</description>
 		</method>
@@ -42,7 +39,7 @@
 		<method name="get_material_paths">
 			<return type="PackedStringArray" />
 			<description>
-				Returns the unique BSP material paths referenced by the currently loaded map. Face material IDs index this array.
+				Returns the unique BSP material paths referenced by the currently loaded map. [member face_material_ids] indexes this array.
 			</description>
 		</method>
 		<method name="get_model_count">
@@ -51,7 +48,16 @@
 				Returns the number of brush models stored in the BSP.
 			</description>
 		</method>
+		<method name="get_model_index">
+			<return type="int" />
+		</method>
 		<method name="get_path">
+			<return type="String" />
+		</method>
+		<method name="get_resolver">
+			<return type="SourcePPResolver" />
+		</method>
+		<method name="get_resolver_game_id">
 			<return type="String" />
 		</method>
 		<method name="get_version">
@@ -65,9 +71,58 @@
 			<param index="0" name="path" type="String" />
 			<description>
 				Opens a BSP file from disk and caches the brush-model geometry, texture info, and material table needed for mesh extraction.
+				The currently selected [member model_index] is immediately converted into [member halfedge_mesh] and [member face_material_ids].
 			</description>
+		</method>
+		<method name="open_from_buffer">
+			<return type="int" enum="Error" />
+			<param index="0" name="data" type="PackedByteArray" />
+			<param index="1" name="path" type="String" default="&quot;&quot;" />
+			<description>
+				Opens a BSP from raw bytes.
+				If [param path] is provided, it becomes the logical source path used for metadata and resolver-relative lookups while the parser itself uses an internal temporary backing file.
+			</description>
+		</method>
+		<method name="set_face_material_ids">
+			<return type="void" />
+			<param index="0" name="face_material_ids" type="PackedInt32Array" />
+		</method>
+		<method name="set_halfedge_mesh">
+			<return type="void" />
+			<param index="0" name="halfedge_mesh" type="HalfEdgeMesh" />
+		</method>
+		<method name="set_model_index">
+			<return type="void" />
+			<param index="0" name="model_index" type="int" />
+			<description>
+				Selects which BSP brush model is mirrored into [member halfedge_mesh] and [member face_material_ids].
+				If a BSP is already open, changing this rebuilds the current editable mesh state.
+			</description>
+		</method>
+		<method name="set_resolver">
+			<return type="void" />
+			<param index="0" name="resolver" type="SourcePPResolver" />
+		</method>
+		<method name="set_resolver_game_id">
+			<return type="void" />
+			<param index="0" name="game_id" type="String" />
 		</method>
 	</methods>
 	<members>
+		<member name="face_material_ids" type="PackedInt32Array" setter="set_face_material_ids" getter="get_face_material_ids">
+			One material ID per face in [member halfedge_mesh]. These IDs index [method get_material_paths].
+		</member>
+		<member name="halfedge_mesh" type="HalfEdgeMesh" setter="set_halfedge_mesh" getter="get_halfedge_mesh">
+			The current editable BSP brush-model mesh.
+		</member>
+		<member name="model_index" type="int" setter="set_model_index" getter="get_model_index" default="0">
+			The BSP brush model currently mirrored into [member halfedge_mesh].
+		</member>
+		<member name="resolver" type="SourcePPResolver" setter="set_resolver" getter="get_resolver">
+			Optional Source asset resolver used by [method create_node] to load VMTs, textures, and other referenced files.
+		</member>
+		<member name="resolver_game_id" type="String" setter="set_resolver_game_id" getter="get_resolver_game_id" default="&quot;&quot;">
+			Optional game identifier used with [member resolver] when resolving Source assets.
+		</member>
 	</members>
 </class>

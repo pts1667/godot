@@ -55,6 +55,8 @@ public:
 
 	[[nodiscard]] SearchPathMapDir& getSearchPathDirs();
 
+	[[nodiscard]] const std::string& getRootPath() const;
+
 	[[nodiscard]] const SearchPathMapVPK& getSearchPathVPKs() const;
 
 	[[nodiscard]] SearchPathMapVPK& getSearchPathVPKs();

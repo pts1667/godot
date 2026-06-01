@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <class name="SourcePPResolver" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
 	<brief_description>
-		Resolves Source Engine assets from registered local installs and Steam game VPKs.
+		Resolves Source Engine assets from registered local installs, loose content folders, and Steam game VPKs.
 	</brief_description>
 	<description>
 		[SourcePPResolver] wraps the bundled SourcePP file-system layer and exposes a higher-level Godot API for Source game content lookup.
-		It can register local Source installs or Steam apps, build per-search-path maps of VPK-backed entries, return the owning VPK path for a virtual asset path, and read files such as [code]models/props/crate.mdl[/code] directly from registered content.
+		It can register local Source installs or Steam apps, build per-search-path maps of loose and VPK-backed entries, return the resolved source path for a virtual asset path, and read files such as [code]models/props/crate.mdl[/code] directly from registered content.
+		If both a loose file and a VPK entry exist for the same virtual path, the loose file is preferred.
 		Classes such as [SourcePPMDL] and [SourceAnimPlayer] can use a resolver instance to fetch companion assets from VPKs instead of requiring loose files on disk.
 		[codeblock]
 		var resolver := SourcePPResolver.new()
@@ -29,7 +30,9 @@
 			<return type="Dictionary" />
 			<param index="0" name="search_path" type="String" default="&quot;GAME&quot;" />
 			<description>
-				Returns a nested dictionary of [code]game_id -&gt; { entry_path: vpk_path }[/code] for the requested Source search path.
+				Returns a nested dictionary of [code]game_id -&gt; { entry_path: source_path }[/code] for the requested Source search path.
+				The resolved [code]source_path[/code] is either an absolute loose-file path or the VPK path that contributes the entry.
+				Loose files override conflicting VPK entries.
 			</description>
 		</method>
 		<method name="get_file_vpk_path">
@@ -38,7 +41,8 @@
 			<param index="1" name="game_id" type="String" default="&quot;&quot;" />
 			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
 			<description>
-				Returns the VPK path that contains [param file_path], or an empty string if no registered game contains it.
+				Returns the resolved source path that contributes [param file_path], or an empty string if no registered game contains it.
+				When a loose file overrides a packed entry, this returns the loose-file path.
 				If [param game_id] is empty, registered games are searched in registration order.
 			</description>
 		</method>
@@ -55,6 +59,7 @@
 			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
 			<description>
 				Returns [code]true[/code] if the requested virtual file exists in one of the registered search roots.
+				Loose files are checked before VPK entries.
 				If [param game_id] is empty, registered games are searched in registration order.
 			</description>
 		</method>
@@ -65,6 +70,7 @@
 			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
 			<description>
 				Reads the requested virtual file from a registered Source install or VPK and returns its bytes. If the file is not found, an empty array is returned.
+				Loose files are preferred over VPK entries.
 				If [param game_id] is empty, registered games are searched in registration order.
 			</description>
 		</method>

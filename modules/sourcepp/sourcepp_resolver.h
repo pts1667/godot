@@ -11,6 +11,7 @@
 #include "core/error/error_list.h"
 #include "core/object/ref_counted.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -23,9 +24,14 @@ class FileSystem;
 class SourcePPResolver : public RefCounted {
 	GDCLASS(SourcePPResolver, RefCounted);
 
+	struct RegisteredEntry {
+		std::string source_path;
+		bool is_vpk = false;
+	};
+
 	struct RegisteredGame {
 		std::unique_ptr<fspp::FileSystem> file_system;
-		std::unordered_map<std::string, std::unordered_map<std::string, std::string>> entry_map_by_search_path;
+		std::unordered_map<std::string, std::unordered_map<std::string, RegisteredEntry>> entry_map_by_search_path;
 	};
 
 	std::unordered_map<std::string, RegisteredGame> registered_games;
@@ -37,7 +43,9 @@ class SourcePPResolver : public RefCounted {
 	static String _from_utf8(const std::string &p_string);
 	static std::string _normalize_entry_path(const String &p_path);
 	static std::string _normalize_search_path(const String &p_search_path);
+	static String _path_to_string(const std::filesystem::path &p_path);
 	static PackedByteArray _to_packed_byte_array(const std::vector<std::byte> &p_bytes);
+	static void _index_search_path_directory(const std::filesystem::path &p_root_path, const std::string &p_base_path, std::unordered_map<std::string, RegisteredEntry> &r_entry_map);
 
 	Error _register_game(const std::string &p_game_id, std::unique_ptr<fspp::FileSystem> p_file_system);
 	const RegisteredGame *_find_registered_game(std::string_view p_game_id) const;

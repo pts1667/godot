@@ -19,12 +19,21 @@
 #include <vector>
 
 class HalfEdgeMesh;
+class Material;
+class Node3D;
+class SourcePPResolver;
 
 class SourcePPBSP : public RefCounted {
 	GDCLASS(SourcePPBSP, RefCounted);
 
 	std::unique_ptr<bsppp::BSP> bsp;
+	Ref<SourcePPResolver> resolver;
+	String resolver_game_id;
 	String source_path;
+	String temporary_backing_path;
+	int model_index = 0;
+	Ref<HalfEdgeMesh> halfedge_mesh;
+	PackedInt32Array face_material_ids;
 	std::vector<bsppp::BSPVertex> bsp_vertices;
 	std::vector<bsppp::BSPFace> bsp_faces;
 	std::vector<bsppp::BSPEdge> bsp_edges;
@@ -42,17 +51,34 @@ class SourcePPBSP : public RefCounted {
 	static Vector3 _source_to_godot_position(const sourcepp::math::Vec3f &p_position);
 	static int32_t _read_lump_i32(const std::vector<std::byte> &p_bytes, size_t p_offset, bool p_big_endian);
 	static String _read_lump_string(const std::vector<std::byte> &p_bytes, int32_t p_offset);
+	void _clear_temporary_backing_file();
 
 	Error _cache_lumps();
 	Error _cache_material_paths();
+	Error _rebuild_current_halfedge_mesh();
 	int _get_face_material_id(const bsppp::BSPFace &p_face) const;
+	String _resolve_material_path(const String &p_material_name) const;
+	Ref<Material> _create_import_material(int p_material_id) const;
+	Error _build_surface_arrays_for_material(int p_material_id, Array &r_arrays) const;
 	Error _build_model_mesh_data(int p_model_index, PackedVector3Array &r_vertices, Array &r_faces, PackedInt32Array &r_face_material_ids) const;
 
 public:
 	SourcePPBSP();
 	~SourcePPBSP() override;
 
+	void set_resolver(const Ref<SourcePPResolver> &p_resolver);
+	Ref<SourcePPResolver> get_resolver() const;
+	void set_resolver_game_id(const String &p_game_id);
+	String get_resolver_game_id() const;
+	void set_model_index(int p_model_index);
+	int get_model_index() const;
+	void set_halfedge_mesh(const Ref<HalfEdgeMesh> &p_halfedge_mesh);
+	Ref<HalfEdgeMesh> get_halfedge_mesh() const;
+	void set_face_material_ids(const PackedInt32Array &p_face_material_ids);
+	PackedInt32Array get_face_material_ids() const;
+
 	Error open(const String &p_path);
+	Error open_from_buffer(const PackedByteArray &p_data, const String &p_path = String());
 	void close();
 	bool is_open() const;
 
@@ -61,6 +87,5 @@ public:
 	int get_map_revision() const;
 	int get_model_count() const;
 	PackedStringArray get_material_paths() const;
-	PackedInt32Array get_face_material_ids(int p_model_index = 0) const;
-	Ref<HalfEdgeMesh> create_halfedge_mesh(int p_model_index = 0) const;
+	Node3D *create_node() const;
 };

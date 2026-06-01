@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <string_view>
 
 SourcePPResolver::SourcePPResolver() = default;
@@ -38,6 +39,12 @@ std::string SourcePPResolver::_normalize_search_path(const String &p_search_path
 	return _to_utf8(p_search_path.strip_edges().to_lower());
 }
 
+String SourcePPResolver::_path_to_string(const std::filesystem::path &p_path) {
+	std::filesystem::path preferred_path = p_path;
+	preferred_path.make_preferred();
+	return _from_utf8(preferred_path.string());
+}
+
 PackedByteArray SourcePPResolver::_to_packed_byte_array(const std::vector<std::byte> &p_bytes) {
 	PackedByteArray out;
 	out.resize(static_cast<int>(p_bytes.size()));
@@ -47,18 +54,67 @@ PackedByteArray SourcePPResolver::_to_packed_byte_array(const std::vector<std::b
 	return out;
 }
 
+void SourcePPResolver::_index_search_path_directory(const std::filesystem::path &p_root_path, const std::string &p_base_path, std::unordered_map<std::string, RegisteredEntry> &r_entry_map) {
+	const std::filesystem::path base_directory = p_root_path / p_base_path;
+	std::error_code error;
+	if (!std::filesystem::exists(base_directory, error) || !std::filesystem::is_directory(base_directory, error)) {
+		return;
+	}
+
+	for (std::filesystem::recursive_directory_iterator iterator(base_directory, std::filesystem::directory_options::skip_permission_denied, error), end; iterator != end; iterator.increment(error)) {
+		if (error) {
+			error.clear();
+			continue;
+		}
+
+		const std::filesystem::directory_entry &entry = *iterator;
+		if (!entry.is_regular_file(error)) {
+			error.clear();
+			continue;
+		}
+
+		const std::filesystem::path relative_path = std::filesystem::relative(entry.path(), base_directory, error);
+		if (error) {
+			error.clear();
+			continue;
+		}
+
+		const std::string entry_path = _normalize_entry_path(_from_utf8(relative_path.generic_string()));
+		if (entry_path.empty()) {
+			continue;
+		}
+
+		const auto existing = r_entry_map.find(entry_path);
+		if (existing != r_entry_map.end() && !existing->second.is_vpk) {
+			continue;
+		}
+
+		r_entry_map[entry_path] = RegisteredEntry{
+			.source_path = _to_utf8(_path_to_string(entry.path())),
+			.is_vpk = false,
+		};
+	}
+}
+
 Error SourcePPResolver::_register_game(const std::string &p_game_id, std::unique_ptr<fspp::FileSystem> p_file_system) {
 	ERR_FAIL_NULL_V_MSG(p_file_system, ERR_INVALID_PARAMETER, "File system must not be null.");
 
 	RegisteredGame registered_game;
 	registered_game.file_system = std::move(p_file_system);
+	const std::filesystem::path root_path = registered_game.file_system->getRootPath();
 	for (const auto &[search_path, pack_files] : registered_game.file_system->getSearchPathVPKs()) {
 		auto &entry_map = registered_game.entry_map_by_search_path[search_path];
 		for (const auto &pack_file : pack_files) {
 			const std::string pack_file_path(pack_file->getFilepath());
 			pack_file->runForAllEntries([&entry_map, &pack_file_path](const std::string &p_path, const vpkpp::Entry &) {
-				entry_map.try_emplace(p_path, pack_file_path);
+				entry_map.try_emplace(SourcePPResolver::_normalize_entry_path(SourcePPResolver::_from_utf8(p_path)), RegisteredEntry{ .source_path = pack_file_path, .is_vpk = true });
 			});
+		}
+	}
+	for (const auto &[search_path, directories] : registered_game.file_system->getSearchPathDirs()) {
+		auto &entry_map = registered_game.entry_map_by_search_path[search_path];
+		for (const std::string &directory : directories) {
+			_index_search_path_directory(root_path, directory, entry_map);
 		}
 	}
 
@@ -139,8 +195,8 @@ Dictionary SourcePPResolver::get_entry_map(const String &p_search_path) const {
 		}
 
 		Dictionary game_entries;
-		for (const auto &[entry_path, vpk_path] : iterator->second) {
-			game_entries[_from_utf8(entry_path)] = _from_utf8(vpk_path);
+		for (const auto &[entry_path, entry_info] : iterator->second) {
+			game_entries[_from_utf8(entry_path)] = _from_utf8(entry_info.source_path);
 		}
 		out[_from_utf8(game_id)] = game_entries;
 	}
@@ -163,7 +219,7 @@ String SourcePPResolver::get_file_vpk_path(const String &p_file_path, const Stri
 		if (entry_iterator == search_iterator->second.end()) {
 			return String();
 		}
-		return _from_utf8(entry_iterator->second);
+		return _from_utf8(entry_iterator->second.source_path);
 	};
 
 	if (!p_game_id.is_empty()) {
@@ -183,7 +239,7 @@ bool SourcePPResolver::has_file(const String &p_file_path, const String &p_game_
 	const std::string search_path = _normalize_search_path(p_search_path);
 
 	auto game_has_file = [&](const RegisteredGame *p_registered_game) {
-		return p_registered_game != nullptr && p_registered_game->file_system != nullptr && p_registered_game->file_system->read(file_path, search_path, true).has_value();
+		return p_registered_game != nullptr && p_registered_game->file_system != nullptr && p_registered_game->file_system->read(file_path, search_path, false).has_value();
 	};
 
 	if (!p_game_id.is_empty()) {
@@ -206,7 +262,7 @@ PackedByteArray SourcePPResolver::read_file(const String &p_file_path, const Str
 		if (p_registered_game == nullptr || p_registered_game->file_system == nullptr) {
 			return PackedByteArray();
 		}
-		const auto bytes = p_registered_game->file_system->read(file_path, search_path, true);
+		const auto bytes = p_registered_game->file_system->read(file_path, search_path, false);
 		if (!bytes.has_value()) {
 			return PackedByteArray();
 		}
