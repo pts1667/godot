@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="HalfEdgeMesh" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Editable half-edge surface mesh with n-gon support and mesh conversion helpers.
+	</brief_description>
+	<description>
+		[HalfEdgeMesh] stores polygonal surface topology using a half-edge representation while exposing a script-friendly API.
+		Faces may contain any number of vertices, so the structure can represent triangles, quads, and larger n-gons.
+		When built from standard triangle mesh arrays or a [Mesh] surface, adjacent coplanar triangles are merged automatically and the same pass continues merging adjacent coplanar quads or larger polygons when the resulting face stays planar and simple.
+		The generated mesh export triangulates each face back to standard Godot mesh arrays and computes averaged vertex normals from the stored faces.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="add_face">
+			<return type="int" />
+			<param index="0" name="vertex_indices" type="PackedInt32Array" />
+			<description>
+				Adds a face using the provided vertex indices and returns its index. Faces must be planar and contain at least three unique vertices.
+			</description>
+		</method>
+		<method name="add_vertex">
+			<return type="int" />
+			<param index="0" name="position" type="Vector3" />
+			<description>
+				Adds a vertex position and returns the new vertex index.
+			</description>
+		</method>
+		<method name="add_box">
+			<return type="Dictionary" />
+			<param index="0" name="size" type="Vector3" default="Vector3(1, 1, 1)" />
+			<param index="1" name="transform" type="Transform3D" default="Transform3D()" />
+			<description>
+				Appends a box centered on the origin, transformed by [param transform].
+				Returns a dictionary with [code]vertices[/code] and [code]faces[/code] listing the appended indices.
+			</description>
+		</method>
+		<method name="add_cylinder">
+			<return type="Dictionary" />
+			<param index="0" name="radius" type="float" default="0.5" />
+			<param index="1" name="height" type="float" default="1.0" />
+			<param index="2" name="radial_segments" type="int" default="16" />
+			<param index="3" name="transform" type="Transform3D" default="Transform3D()" />
+			<description>
+				Appends a cylinder aligned to the local Y axis.
+				The side wall is built from quads, while the top and bottom are n-gon faces.
+				Returns a dictionary with [code]vertices[/code] and [code]faces[/code] listing the appended indices.
+			</description>
+		</method>
+		<method name="add_icosphere">
+			<return type="Dictionary" />
+			<param index="0" name="radius" type="float" default="0.5" />
+			<param index="1" name="subdivisions" type="int" default="1" />
+			<param index="2" name="transform" type="Transform3D" default="Transform3D()" />
+			<description>
+				Appends an icosphere made entirely of triangle faces.
+				Each subdivision step splits every triangle into four smaller triangles before projection back to the sphere radius.
+				Returns a dictionary with [code]vertices[/code] and [code]faces[/code] listing the appended indices.
+			</description>
+		</method>
+		<method name="add_uv_sphere">
+			<return type="Dictionary" />
+			<param index="0" name="radius" type="float" default="0.5" />
+			<param index="1" name="radial_segments" type="int" default="16" />
+			<param index="2" name="rings" type="int" default="8" />
+			<param index="3" name="transform" type="Transform3D" default="Transform3D()" />
+			<description>
+				Appends a UV sphere aligned to the local Y axis.
+				The intermediate latitude bands are quads, while the poles use triangle fans so the surface stays spherical under planar face validation.
+				Returns a dictionary with [code]vertices[/code] and [code]faces[/code] listing the appended indices.
+			</description>
+		</method>
+		<method name="build_from_arrays">
+			<return type="int" enum="Error" />
+			<param index="0" name="arrays" type="Array" />
+			<description>
+				Builds the half-edge mesh from standard [Mesh] arrays. Only the vertex and index arrays are used, and the source data is expected to describe triangles.
+			</description>
+		</method>
+		<method name="build_from_mesh">
+			<return type="int" enum="Error" />
+			<param index="0" name="mesh" type="Mesh" />
+			<param index="1" name="surface" type="int" default="0" />
+			<description>
+				Builds the half-edge mesh from one triangle surface of [param mesh], automatically merging adjacent coplanar faces into larger polygons when possible.
+			</description>
+		</method>
+		<method name="build_from_triangle_arrays">
+			<return type="int" enum="Error" />
+			<param index="0" name="vertices" type="PackedVector3Array" />
+			<param index="1" name="indices" type="PackedInt32Array" default="PackedInt32Array()" />
+			<description>
+				Builds the half-edge mesh from triangle vertices and optional indices. If [param indices] is empty, [param vertices] is read as consecutive triangle triplets.
+			</description>
+		</method>
+		<method name="bevel">
+			<return type="Dictionary" />
+			<param index="0" name="edges" type="PackedInt32Array" />
+			<description>
+				Performs a zero-offset topological bevel on the selected full edges.
+				Each selected edge must be an interior manifold edge.
+				The operation duplicates every connected selected-edge endpoint once per incident face, rewrites those incident faces to the duplicates, creates one new face per selected vertex, and creates one new quad per selected edge.
+				Returns a dictionary with [code]edge_faces[/code], [code]vertex_faces[/code], and [code]replaced_faces[/code].
+			</description>
+		</method>
+		<method name="clear">
+			<return type="void" />
+			<description>
+				Removes all vertices, faces, and derived half-edge topology.
+			</description>
+		</method>
+		<method name="compact_vertices">
+			<return type="void" />
+			<description>
+				Removes vertices that are no longer referenced by any face and remaps the remaining topology.
+			</description>
+		</method>
+		<method name="cut">
+			<return type="PackedInt32Array" />
+			<param index="0" name="face" type="int" />
+			<param index="1" name="points" type="PackedVector2Array" />
+			<description>
+				Cuts the requested face with a closed loop of ordered 2D points in that face's local projection space.
+				The cut loop becomes a new inner face, while the original face is replaced by the clipped remainder polygons.
+				All cut points must lie inside the target face and every segment, including the implicit last-to-first segment, must stay inside the face boundary.
+				Returns the indices of the faces produced by the operation.
+			</description>
+		</method>
+		<method name="extrude">
+			<return type="PackedInt32Array" />
+			<param index="0" name="face" type="int" />
+			<param index="1" name="distance" type="float" />
+			<description>
+				Extrudes the requested face along its normal by [param distance], creating a new top face and one quad side face per boundary edge.
+				Returns the indices of the created faces.
+			</description>
+		</method>
+		<method name="get_collinear_epsilon">
+			<return type="float" />
+			<description>
+				Returns the tolerance used when simplifying merged polygons by removing collinear vertices.
+			</description>
+		</method>
+		<method name="get_coplanar_epsilon">
+			<return type="float" />
+			<description>
+				Returns the tolerance used when checking whether adjacent faces can be merged.
+			</description>
+		</method>
+		<method name="get_edge_count">
+			<return type="int" />
+		</method>
+		<method name="get_edge_data">
+			<return type="Dictionary" />
+			<param index="0" name="edge" type="int" />
+			<description>
+				Returns a dictionary containing [code]halfedge[/code], [code]vertices[/code], and [code]boundary[/code] for the requested edge.
+			</description>
+		</method>
+		<method name="get_face_count">
+			<return type="int" />
+		</method>
+		<method name="get_face_data">
+			<return type="Dictionary" />
+			<param index="0" name="face" type="int" />
+			<description>
+				Returns a dictionary containing [code]halfedge[/code], [code]plane[/code], [code]normal[/code], and [code]vertices[/code] for the requested face.
+			</description>
+		</method>
+		<method name="get_face_projection">
+			<return type="Dictionary" />
+			<param index="0" name="face" type="int" />
+			<description>
+				Returns the local 2D projection basis for the requested face.
+				The dictionary contains [code]origin[/code], [code]tangent[/code], [code]bitangent[/code], [code]normal[/code], and [code]vertices[/code], where [code]vertices[/code] is the current face loop projected into that basis.
+				Use this coordinate space when providing points to [method cut].
+			</description>
+		</method>
+		<method name="get_face_vertex_indices">
+			<return type="PackedInt32Array" />
+			<param index="0" name="face" type="int" />
+		</method>
+		<method name="get_faces">
+			<return type="Array" />
+			<description>
+				Returns the stored polygon faces as an array of [PackedInt32Array] values.
+			</description>
+		</method>
+		<method name="get_halfedge_count">
+			<return type="int" />
+		</method>
+		<method name="get_halfedge_data">
+			<return type="Dictionary" />
+			<param index="0" name="halfedge" type="int" />
+			<description>
+				Returns a dictionary containing [code]origin[/code], [code]destination[/code], [code]face[/code], [code]edge[/code], [code]next[/code], [code]prev[/code], [code]twin[/code], and [code]boundary[/code] for the requested half-edge.
+			</description>
+		</method>
+		<method name="get_vertex_count">
+			<return type="int" />
+		</method>
+		<method name="get_vertex_position">
+			<return type="Vector3" />
+			<param index="0" name="vertex" type="int" />
+		</method>
+		<method name="get_vertices">
+			<return type="PackedVector3Array" />
+		</method>
+		<method name="remove_face">
+			<return type="bool" />
+			<param index="0" name="face" type="int" />
+		</method>
+		<method name="set_collinear_epsilon">
+			<return type="void" />
+			<param index="0" name="epsilon" type="float" />
+		</method>
+		<method name="set_coplanar_epsilon">
+			<return type="void" />
+			<param index="0" name="epsilon" type="float" />
+		</method>
+		<method name="set_faces">
+			<return type="int" enum="Error" />
+			<param index="0" name="vertices" type="PackedVector3Array" />
+			<param index="1" name="faces" type="Array" />
+			<description>
+				Replaces the mesh with the provided explicit polygon faces. Each face entry must be a [PackedInt32Array] or an array of integers.
+			</description>
+		</method>
+		<method name="set_vertex_position">
+			<return type="void" />
+			<param index="0" name="vertex" type="int" />
+			<param index="1" name="position" type="Vector3" />
+		</method>
+		<method name="to_mesh">
+			<return type="ArrayMesh" />
+			<description>
+				Triangulates the stored faces and returns them as a single-surface [ArrayMesh].
+			</description>
+		</method>
+		<method name="to_mesh_arrays">
+			<return type="Array" />
+			<description>
+				Triangulates the stored faces and returns standard [Mesh] arrays containing vertices, normals, and indices.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="collinear_epsilon" type="float" setter="set_collinear_epsilon" getter="get_collinear_epsilon" default="0.0001">
+			Tolerance used when simplifying merged polygon loops by removing collinear vertices.
+		</member>
+		<member name="coplanar_epsilon" type="float" setter="set_coplanar_epsilon" getter="get_coplanar_epsilon" default="0.001">
+			Tolerance used when deciding whether adjacent faces lie on the same plane.
+		</member>
+	</members>
+</class>
