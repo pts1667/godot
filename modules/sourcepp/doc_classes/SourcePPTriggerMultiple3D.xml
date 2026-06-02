@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPTriggerMultiple3D" inherits="SourcePPBrushArea3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Signal-ready import node for Source trigger_multiple.
+	</brief_description>
+	<description>
+		Emits trigger/touch signals from an imported trigger volume while preserving Source keyvalues and outputs.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPTriggerOnce3D" inherits="SourcePPTriggerMultiple3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Signal-ready import node for Source trigger_once.
+	</brief_description>
+	<description>
+		Acts like [SourcePPTriggerMultiple3D] but disables itself after the first trigger signal.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>

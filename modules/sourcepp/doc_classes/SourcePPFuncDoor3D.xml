@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPFuncDoor3D" inherits="SourcePPBrushBody3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Signal-ready import node for Source func_door.
+	</brief_description>
+	<description>
+		Stores Source door keyvalues and exposes open/close/lock/toggle state signals. This first pass does not simulate full Source door movement.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>

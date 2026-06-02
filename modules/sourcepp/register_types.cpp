@@ -33,6 +33,8 @@
 #include "core/object/class_db.h"
 #include "source_anim_player.h"
 #include "sourcepp_bsp.h"
+#include "sourcepp_bsp_entity.h"
+#include "sourcepp_bsp_shape.h"
 #include "sourcepp_mdl.h"
 #include "sourcepp_resolver.h"
 #include "sourcepp_vmt.h"
@@ -46,6 +48,18 @@ void initialize_sourcepp_module(ModuleInitializationLevel p_level) {
 
 	GDREGISTER_CLASS(SourceAnimPlayer);
 	GDREGISTER_CLASS(SourcePPBSP);
+	GDREGISTER_CLASS(BSPShape3D);
+	GDREGISTER_CLASS(SourcePPBrushEntity3D);
+	GDREGISTER_CLASS(SourcePPBrushArea3D);
+	GDREGISTER_CLASS(SourcePPBrushBody3D);
+	GDREGISTER_CLASS(SourcePPTriggerMultiple3D);
+	GDREGISTER_CLASS(SourcePPTriggerOnce3D);
+	GDREGISTER_CLASS(SourcePPTriggerHurt3D);
+	GDREGISTER_CLASS(SourcePPFuncBrush3D);
+	GDREGISTER_CLASS(SourcePPFuncDoor3D);
+	GDREGISTER_CLASS(SourcePPFuncIllusionary3D);
+	GDREGISTER_CLASS(SourcePPLadder3D);
+	GDREGISTER_CLASS(SourcePPLadderDismount3D);
 	GDREGISTER_CLASS(SourcePPMDL);
 	GDREGISTER_CLASS(SourcePPResolver);
 	GDREGISTER_CLASS(SourcePPVMT);

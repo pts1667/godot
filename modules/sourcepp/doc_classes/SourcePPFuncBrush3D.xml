@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPFuncBrush3D" inherits="SourcePPBrushBody3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Import node for Source func_brush.
+	</brief_description>
+	<description>
+		Stores func_brush solidity settings and imported bmodel geometry.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>

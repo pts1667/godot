@@ -22,10 +22,11 @@
 			<return type="Node3D" />
 			<description>
 				Creates a 3D node hierarchy from the selected BSP brush model.
-				When [member model_index] is [code]0[/code], the returned root node stores BSP metadata, contains a [MeshInstance3D] child named [code]WorldGeometry[/code] for worldspawn, and contains a [code]BModels[/code] child with placed brush-model entity nodes for entity [code]model="*N"[/code] references.
-				Brush entity nodes store [code]sourcepp_bsp_entity_keyvalues[/code] plus model/entity index metadata, and their [code]Geometry[/code] child stores the generated mesh.
+				When [member model_index] is [code]0[/code], the returned root node stores BSP metadata, contains a [MeshInstance3D] child named [code]WorldGeometry[/code] for worldspawn, contains a [code]StaticProps[/code] child with nodes created from the BSP static-prop game lump, contains a [code]BModels[/code] child with placed brush-model entity nodes for entity [code]model="*N"[/code] references, and contains a [code]PointEntities[/code] child with non-brush entity-lump nodes.
+				Entity nodes store [code]sourcepp_bsp_entity_keyvalues[/code] plus model/entity index metadata. Brush entities put generated brush geometry in a [code]Geometry[/code] child. Model-backed point entities put imported MDL content in a [code]Model[/code] child, and physics prop classes receive a generated bounds collision shape.
 				When [member model_index] is nonzero, only that brush model is emitted for inspection.
 				World geometry is emitted as separate opaque and transparent Godot mesh surfaces using generated shader materials.
+				World geometry also gets a [StaticBody3D] child named [code]WorldCollision[/code] with a [CollisionShape3D] using [BSPShape3D].
 				Each shader samples a [Texture2DArray], while each vertex stores the BSP material layer in a custom mesh attribute.
 				Opaque materials use alpha scissor for cutout texture pixels; blended materials are kept in the transparent surface.
 				When a [member resolver] is assigned, referenced VMT and VTF files are loaded while creating the node.
@@ -54,6 +55,12 @@
 			<return type="int" />
 			<description>
 				Returns the number of brush models stored in the BSP.
+			</description>
+		</method>
+		<method name="get_static_prop_count">
+			<return type="int" />
+			<description>
+				Returns the number of static props cached from the BSP's static-prop game lump.
 			</description>
 		</method>
 		<method name="get_model_index">

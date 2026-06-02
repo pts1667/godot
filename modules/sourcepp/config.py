@@ -9,10 +9,22 @@ def configure(env):
 
 def get_doc_classes():
     return [
+        "BSPShape3D",
         "SourceAnimPlayer",
+        "SourcePPBrushArea3D",
+        "SourcePPBrushBody3D",
+        "SourcePPBrushEntity3D",
         "SourcePPBSP",
+        "SourcePPFuncBrush3D",
+        "SourcePPFuncDoor3D",
+        "SourcePPFuncIllusionary3D",
+        "SourcePPLadder3D",
+        "SourcePPLadderDismount3D",
         "SourcePPMDL",
         "SourcePPResolver",
+        "SourcePPTriggerHurt3D",
+        "SourcePPTriggerMultiple3D",
+        "SourcePPTriggerOnce3D",
         "SourcePPVMT",
         "SourcePPVPK",
         "SourcePPVTF",

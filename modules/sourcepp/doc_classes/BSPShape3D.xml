@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="BSPShape3D" inherits="Shape3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Stores Source BSP triangle collision data as a 3D physics shape.
+	</brief_description>
+	<description>
+		[BSPShape3D] is a SourcePP collision shape resource for BSP map geometry.
+		It stores triangle faces, derived bounds, and backface collision state, and currently feeds those faces to Godot's concave polygon physics shape.
+		The data layout is intentionally explicit so future BSP-tree collision data can be added without changing import callers.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="get_bounds">
+			<return type="AABB" />
+			<description>
+				Returns the bounds derived from the current triangle faces.
+			</description>
+		</method>
+		<method name="get_data">
+			<return type="Dictionary" />
+			<description>
+				Returns the shape data dictionary, including [code]faces[/code], [code]bounds[/code], [code]backface_collision[/code], and [code]face_count[/code].
+			</description>
+		</method>
+		<method name="get_face_count">
+			<return type="int" />
+			<description>
+				Returns the number of triangle faces stored in the shape.
+			</description>
+		</method>
+		<method name="get_faces">
+			<return type="PackedVector3Array" />
+			<description>
+				Returns triangle vertices grouped as consecutive triplets.
+			</description>
+		</method>
+		<method name="is_backface_collision_enabled">
+			<return type="bool" />
+		</method>
+		<method name="set_backface_collision_enabled">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+		</method>
+		<method name="set_data">
+			<return type="void" />
+			<param index="0" name="data" type="Dictionary" />
+			<description>
+				Sets the shape from a dictionary containing [code]faces[/code] and optionally [code]backface_collision[/code].
+			</description>
+		</method>
+		<method name="set_faces">
+			<return type="void" />
+			<param index="0" name="faces" type="PackedVector3Array" />
+			<description>
+				Sets triangle vertices grouped as consecutive triplets and recalculates bounds.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="backface_collision" type="bool" setter="set_backface_collision_enabled" getter="is_backface_collision_enabled" default="false">
+			If [code]true[/code], the underlying concave collision shape collides against triangle backfaces.
+		</member>
+	</members>
+</class>

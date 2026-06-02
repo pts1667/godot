@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPBrushEntity3D" inherits="Node3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Base node for imported Source BSP entities.
+	</brief_description>
+	<description>
+		Stores Source classname, targetname, entity/model indexes, keyvalues, and preserved Hammer output definitions. It provides enable/disable helpers and emits [signal source_output_fired] when Source-style outputs are represented as Godot signals.
+	</description>
+	<tutorials>
+	</tutorials>
+	<signals>
+		<signal name="entity_enabled_changed">
+			<param index="0" name="enabled" type="bool" />
+		</signal>
+		<signal name="source_output_fired">
+			<param index="0" name="output_name" type="StringName" />
+			<param index="1" name="activator" type="Object" />
+		</signal>
+	</signals>
+</class>

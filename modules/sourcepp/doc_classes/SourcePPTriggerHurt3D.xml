@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPTriggerHurt3D" inherits="SourcePPBrushArea3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Signal-ready import node for Source trigger_hurt.
+	</brief_description>
+	<description>
+		Stores Source damage keyvalues and emits hurt request signals. It does not directly modify health.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPBrushBody3D" inherits="AnimatableBody3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Base physics body for imported solid Source brush entities.
+	</brief_description>
+	<description>
+		Provides Source metadata and enable/disable helpers for bmodel entities with generated mesh and optional [BSPShape3D] collision.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>

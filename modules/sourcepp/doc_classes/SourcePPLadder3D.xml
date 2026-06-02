@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourcePPLadder3D" inherits="SourcePPBrushEntity3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Signal-ready import node for Source func_useableladder.
+	</brief_description>
+	<description>
+		Stores ladder endpoints, surface properties, and ladder enter/exit signals.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>
