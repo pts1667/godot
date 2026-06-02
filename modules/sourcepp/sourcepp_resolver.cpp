@@ -433,6 +433,75 @@ String SourcePPResolver::get_file_vpk_path(const String &p_file_path, const Stri
 	return String();
 }
 
+Dictionary SourcePPResolver::get_file_source_info(const String &p_file_path, const String &p_game_id, const String &p_search_path) const {
+	const std::string entry_path = _normalize_entry_path(p_file_path);
+	const std::string search_path = _normalize_search_path(p_search_path);
+
+	auto make_missing_info = [&]() {
+		Dictionary info;
+		info["asset_source"] = "unknown";
+		info["source_path"] = String();
+		info["game_id"] = String();
+		info["search_path"] = _from_utf8(search_path);
+		info["is_missing"] = true;
+		info["is_pak"] = false;
+		return info;
+	};
+
+	auto resolve_from_game = [&](const std::string &p_game_id_string, const RegisteredGame *p_registered_game) -> Dictionary {
+		if (p_registered_game == nullptr) {
+			return make_missing_info();
+		}
+
+		const auto search_iterator = p_registered_game->entry_map_by_search_path.find(search_path);
+		if (search_iterator != p_registered_game->entry_map_by_search_path.end()) {
+			const auto entry_iterator = search_iterator->second.find(entry_path);
+			if (entry_iterator != search_iterator->second.end()) {
+				const RegisteredEntry &entry = entry_iterator->second;
+				Dictionary info;
+				const bool is_pak = entry.pack_file_index >= 0;
+				bool found = true;
+				if (is_pak) {
+					found = entry.pack_file_index < static_cast<int>(p_registered_game->pack_files.size()) && !p_registered_game->pack_files[static_cast<size_t>(entry.pack_file_index)].temporary_zip_path.is_empty();
+				}
+				info["asset_source"] = is_pak ? "PAK" : "non-PAK";
+				info["source_path"] = _from_utf8(entry.source_path);
+				info["game_id"] = _from_utf8(p_game_id_string);
+				info["search_path"] = _from_utf8(search_path);
+				info["is_missing"] = !found;
+				info["is_pak"] = is_pak;
+				return info;
+			}
+		}
+
+		if (p_registered_game->file_system != nullptr && p_registered_game->file_system->read(entry_path, search_path, false).has_value()) {
+			Dictionary info;
+			info["asset_source"] = "non-PAK";
+			info["source_path"] = p_file_path;
+			info["game_id"] = _from_utf8(p_game_id_string);
+			info["search_path"] = _from_utf8(search_path);
+			info["is_missing"] = false;
+			info["is_pak"] = false;
+			return info;
+		}
+
+		return make_missing_info();
+	};
+
+	if (!p_game_id.is_empty()) {
+		const std::string game_id = _to_utf8(p_game_id.strip_edges().to_lower());
+		return resolve_from_game(game_id, _find_registered_game(game_id));
+	}
+
+	for (const std::string &game_id : registration_order) {
+		Dictionary info = resolve_from_game(game_id, _find_registered_game(game_id));
+		if (!static_cast<bool>(info["is_missing"])) {
+			return info;
+		}
+	}
+	return make_missing_info();
+}
+
 bool SourcePPResolver::has_file(const String &p_file_path, const String &p_game_id, const String &p_search_path) const {
 	const std::string file_path = _normalize_entry_path(p_file_path);
 	const std::string search_path = _normalize_search_path(p_search_path);
@@ -518,6 +587,7 @@ void SourcePPResolver::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_registered_games"), &SourcePPResolver::get_registered_games);
 	ClassDB::bind_method(D_METHOD("get_entry_map", "search_path"), &SourcePPResolver::get_entry_map, DEFVAL(String("GAME")));
 	ClassDB::bind_method(D_METHOD("get_file_vpk_path", "file_path", "game_id", "search_path"), &SourcePPResolver::get_file_vpk_path, DEFVAL(String()), DEFVAL(String("GAME")));
+	ClassDB::bind_method(D_METHOD("get_file_source_info", "file_path", "game_id", "search_path"), &SourcePPResolver::get_file_source_info, DEFVAL(String()), DEFVAL(String("GAME")));
 	ClassDB::bind_method(D_METHOD("has_file", "file_path", "game_id", "search_path"), &SourcePPResolver::has_file, DEFVAL(String()), DEFVAL(String("GAME")));
 	ClassDB::bind_method(D_METHOD("read_file", "file_path", "game_id", "search_path"), &SourcePPResolver::read_file, DEFVAL(String()), DEFVAL(String("GAME")));
 }

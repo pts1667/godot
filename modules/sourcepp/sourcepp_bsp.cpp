@@ -8,6 +8,7 @@
 
 #include "sourcepp_bsp.h"
 
+#include "sourcepp_import_cache.h"
 #include "sourcepp_resolver.h"
 #include "sourcepp_vmt.h"
 #include "sourcepp_vtf.h"
@@ -18,6 +19,7 @@
 #include "core/error/error_macros.h"
 #include "core/io/file_access.h"
 #include "core/math/geometry_2d.h"
+#include "core/math/math_funcs.h"
 #include "core/object/class_db.h"
 #include "core/templates/hash_map.h"
 
@@ -59,6 +61,48 @@ String _strip_material_prefix(const String &p_path) {
 
 String _with_vmt_extension(const String &p_path) {
 	return p_path.get_extension().to_lower() == "vmt" ? p_path : p_path + ".vmt";
+}
+
+String _with_vtf_extension(const String &p_path) {
+	return p_path.get_extension().to_lower() == "vtf" ? p_path : p_path + ".vtf";
+}
+
+String _alpha_mode_to_string(Image::AlphaMode p_alpha_mode) {
+	switch (p_alpha_mode) {
+		case Image::ALPHA_BIT:
+			return "bit";
+		case Image::ALPHA_BLEND:
+			return "blend";
+		case Image::ALPHA_NONE:
+		default:
+			return "none";
+	}
+}
+
+Vector3 _source_to_godot_direction(const Vector3 &p_direction) {
+	return Vector3(p_direction.x, p_direction.z, -p_direction.y);
+}
+
+Vector3 _parse_source_vector_string(const String &p_value) {
+	const PackedStringArray components = p_value.strip_edges().split(" ", false);
+	if (components.size() < 3) {
+		return Vector3();
+	}
+	return Vector3(components[0].to_float(), components[1].to_float(), components[2].to_float());
+}
+
+Basis _source_angles_to_godot_basis(const Vector3 &p_source_angles) {
+	const real_t sy = Math::sin(Math::deg_to_rad(p_source_angles.y));
+	const real_t cy = Math::cos(Math::deg_to_rad(p_source_angles.y));
+	const real_t sp = Math::sin(Math::deg_to_rad(p_source_angles.x));
+	const real_t cp = Math::cos(Math::deg_to_rad(p_source_angles.x));
+	const real_t sr = Math::sin(Math::deg_to_rad(p_source_angles.z));
+	const real_t cr = Math::cos(Math::deg_to_rad(p_source_angles.z));
+
+	const Vector3 source_x_axis(cp * cy, cp * sy, -sp);
+	const Vector3 source_y_axis(sp * sr * cy - cr * sy, sp * sr * sy + cr * cy, sr * cp);
+	const Vector3 source_z_axis(sp * cr * cy + sr * sy, sp * cr * sy - sr * cy, cr * cp);
+	return Basis(_source_to_godot_direction(source_x_axis), _source_to_godot_direction(source_y_axis), _source_to_godot_direction(source_z_axis)).orthonormalized();
 }
 
 bool _source_material_bool_value(const Ref<SourcePPVMT> &p_vmt, const String &p_key) {
@@ -516,9 +560,62 @@ String SourcePPBSP::_resolve_material_path(const String &p_material_name) const 
 	return String();
 }
 
+Dictionary SourcePPBSP::_entity_to_dictionary(const bsppp::BSPEntityKeyValues &p_entity) const {
+	Dictionary out;
+	for (const bsppp::BSPEntityKeyValues::Element &element : p_entity.getKeyValues()) {
+		const String key = _from_utf8(element.getKey());
+		const String value = _from_utf8(element.getValue());
+		if (!out.has(key)) {
+			out[key] = value;
+			continue;
+		}
+
+		Variant existing = out[key];
+		Array values;
+		if (existing.get_type() == Variant::ARRAY) {
+			values = existing;
+		} else {
+			values.push_back(existing);
+		}
+		values.push_back(value);
+		out[key] = values;
+	}
+	return out;
+}
+
+String SourcePPBSP::_get_entity_value(const bsppp::BSPEntityKeyValues &p_entity, const String &p_key, const String &p_default) const {
+	const String requested_key = p_key.strip_edges().to_lower();
+	for (const bsppp::BSPEntityKeyValues::Element &element : p_entity.getKeyValues()) {
+		if (_from_utf8(element.getKey()).strip_edges().to_lower() == requested_key) {
+			return _from_utf8(element.getValue());
+		}
+	}
+	return p_default;
+}
+
+int SourcePPBSP::_get_entity_bmodel_index(const bsppp::BSPEntityKeyValues &p_entity) const {
+	const String model_value = _get_entity_value(p_entity, "model").strip_edges();
+	if (!model_value.begins_with("*")) {
+		return -1;
+	}
+
+	const String model_index_string = model_value.substr(1).strip_edges();
+	if (!model_index_string.is_valid_int()) {
+		return -1;
+	}
+	return model_index_string.to_int();
+}
+
+Transform3D SourcePPBSP::_get_entity_transform(const bsppp::BSPEntityKeyValues &p_entity) const {
+	const Vector3 source_origin = _parse_source_vector_string(_get_entity_value(p_entity, "origin"));
+	const Vector3 source_angles = _parse_source_vector_string(_get_entity_value(p_entity, "angles"));
+	return Transform3D(_source_angles_to_godot_basis(source_angles), _source_to_godot_direction(source_origin) * SOURCE_UNIT_TO_METERS);
+}
+
 Error SourcePPBSP::_cache_lumps() {
 	ERR_FAIL_COND_V_MSG(bsp == nullptr, ERR_UNCONFIGURED, "No BSP is currently open.");
 
+	bsp_entities = bsp->getLumpData<bsppp::BSPLump::ENTITIES>();
 	bsp_vertices = bsp->getLumpData<bsppp::BSPLump::VERTEXES>();
 	bsp_faces = bsp->getLumpData<bsppp::BSPLump::FACES>();
 	bsp_edges = bsp->getLumpData<bsppp::BSPLump::EDGES>();
@@ -618,48 +715,199 @@ Ref<Image> SourcePPBSP::_create_fallback_texture_array_image() const {
 	return image;
 }
 
-Ref<Image> SourcePPBSP::_load_material_texture_array_image(int p_material_id, Image::AlphaMode *r_alpha_mode) const {
+Dictionary SourcePPBSP::_get_asset_source_info(const String &p_asset_path, bool p_missing) const {
+	Dictionary info;
+	info["asset_source"] = "unknown";
+	info["source_path"] = String();
+	info["game_id"] = String();
+	info["search_path"] = "GAME";
+	info["is_missing"] = p_missing;
+	info["is_pak"] = false;
+
+	if (p_asset_path.is_empty()) {
+		return info;
+	}
+
+	if (FileAccess::exists(p_asset_path)) {
+		info["asset_source"] = "non-PAK";
+		info["source_path"] = p_asset_path;
+		info["is_missing"] = p_missing;
+		return info;
+	}
+
+	if (resolver.is_valid()) {
+		Dictionary resolver_info = resolver_game_id.is_empty() ? resolver->get_file_source_info(p_asset_path) : resolver->get_file_source_info(p_asset_path, resolver_game_id);
+		if (!resolver_info.is_empty()) {
+			resolver_info["is_missing"] = p_missing || static_cast<bool>(resolver_info["is_missing"]);
+			return resolver_info;
+		}
+	}
+
+	return info;
+}
+
+void SourcePPBSP::_record_asset_metadata(Dictionary *r_asset_metadata, const String &p_asset_path, const String &p_asset_type, const String &p_material_type, bool p_missing, const Dictionary &p_metadata) const {
+	if (r_asset_metadata == nullptr) {
+		return;
+	}
+
+	const String asset_path = _normalize_source_path(p_asset_path);
+	if (asset_path.is_empty()) {
+		return;
+	}
+
+	Dictionary asset_info = _get_asset_source_info(asset_path, p_missing);
+	asset_info["asset_type"] = p_asset_type;
+	asset_info["material_type"] = p_material_type;
+	asset_info["metadata"] = p_metadata;
+	(*r_asset_metadata)[asset_path] = asset_info;
+}
+
+Ref<Image> SourcePPBSP::_load_material_texture_array_image(int p_material_id, SourcePPImportCache *p_import_cache, const Ref<Image> &p_fallback_image, Image::AlphaMode *r_alpha_mode, Dictionary *r_asset_metadata, bool p_warn_missing) const {
 	if (r_alpha_mode != nullptr) {
 		*r_alpha_mode = Image::ALPHA_NONE;
 	}
 
-	Ref<Image> fallback_image = _create_fallback_texture_array_image();
+	Ref<Image> fallback_image = p_fallback_image.is_valid() ? p_fallback_image : _create_fallback_texture_array_image();
 	if (p_material_id < 0 || p_material_id >= material_paths.size()) {
 		return fallback_image;
 	}
 
-	const String material_path = _resolve_material_path(material_paths[p_material_id]);
+	const String material_name = material_paths[p_material_id];
+	const String requested_material_path = _with_vmt_extension(_strip_material_prefix(_normalize_source_path(material_name)));
+	const String material_path = _resolve_material_path(material_name);
 	if (material_path.is_empty()) {
+		Dictionary material_metadata;
+		material_metadata["material_id"] = p_material_id;
+		material_metadata["material_name"] = material_name;
+		material_metadata["requested_material_path"] = requested_material_path;
+		material_metadata["resolved_material_path"] = String();
+		material_metadata["reason"] = "material_not_found";
+		_record_asset_metadata(r_asset_metadata, requested_material_path, "material", "unknown", true, material_metadata);
+		if (p_warn_missing) {
+			WARN_PRINT(vformat("SourcePP BSP missing material '%s' while importing '%s'.", material_name, source_path));
+		}
 		return fallback_image;
 	}
 
+	Error vmt_error = OK;
 	Ref<SourcePPVMT> vmt;
-	vmt.instantiate();
-	vmt->set_resolver(resolver);
-	vmt->set_resolver_game_id(resolver_game_id);
-	if (vmt->open(material_path) != OK) {
+	if (p_import_cache != nullptr) {
+		vmt = p_import_cache->get_vmt(material_path, resolver, resolver_game_id, &vmt_error);
+	} else {
+		vmt.instantiate();
+		vmt->set_resolver(resolver);
+		vmt->set_resolver_game_id(resolver_game_id);
+		vmt_error = vmt->open(material_path);
+	}
+	if (vmt_error != OK || vmt.is_null()) {
+		Dictionary material_metadata;
+		material_metadata["material_id"] = p_material_id;
+		material_metadata["material_name"] = material_name;
+		material_metadata["requested_material_path"] = requested_material_path;
+		material_metadata["resolved_material_path"] = material_path;
+		material_metadata["reason"] = "material_open_failed";
+		_record_asset_metadata(r_asset_metadata, material_path, "material", "unknown", true, material_metadata);
+		if (p_warn_missing) {
+			WARN_PRINT(vformat("SourcePP BSP material '%s' resolved to '%s' but could not be opened.", material_name, material_path));
+		}
 		return fallback_image;
 	}
 
+	const String material_type = vmt->get_shader();
+	Dictionary material_metadata;
+	material_metadata["material_id"] = p_material_id;
+	material_metadata["material_name"] = material_name;
+	material_metadata["requested_material_path"] = requested_material_path;
+	material_metadata["resolved_material_path"] = material_path;
+	material_metadata["shader"] = material_type;
+	material_metadata["properties"] = vmt->get_properties();
+	material_metadata["texture_dependencies"] = vmt->get_texture_dependencies();
+	material_metadata["resolved_texture_dependencies"] = vmt->get_resolved_texture_dependencies();
+	material_metadata["is_translucent"] = _source_material_bool_value(vmt, "$translucent");
+	material_metadata["is_additive"] = _source_material_bool_value(vmt, "$additive");
+	material_metadata["alpha"] = _source_material_float_value(vmt, "$alpha", 1.0f);
+	_record_asset_metadata(r_asset_metadata, material_path, "material", material_type, false, material_metadata);
+
+	const String base_texture_request_path = vmt->get_base_texture_path();
 	const String base_texture_path = vmt->get_resolved_base_texture_path();
 	if (base_texture_path.is_empty()) {
+		Dictionary texture_metadata;
+		texture_metadata["material_id"] = p_material_id;
+		texture_metadata["material_name"] = material_name;
+		texture_metadata["material_path"] = material_path;
+		texture_metadata["texture_role"] = "$basetexture";
+		texture_metadata["requested_texture_path"] = base_texture_request_path;
+		texture_metadata["resolved_texture_path"] = String();
+		texture_metadata["reason"] = base_texture_request_path.is_empty() ? "base_texture_not_declared" : "base_texture_not_found";
+		const String metadata_key = base_texture_request_path.is_empty() ? material_path + ":$basetexture" : _with_vtf_extension(base_texture_request_path);
+		_record_asset_metadata(r_asset_metadata, metadata_key, "texture", material_type, true, texture_metadata);
+		if (p_warn_missing) {
+			WARN_PRINT(vformat("SourcePP BSP material '%s' has no resolvable $basetexture while importing '%s'.", material_path, source_path));
+		}
 		return fallback_image;
 	}
 
-	Ref<SourcePPVTF> vtf;
-	vtf.instantiate();
-	vtf->set_resolver(resolver);
-	vtf->set_resolver_game_id(resolver_game_id);
-	if (vtf->open(base_texture_path) != OK) {
+	Error texture_error = OK;
+	Ref<Image> image;
+	if (p_import_cache != nullptr) {
+		image = p_import_cache->get_vtf_image(base_texture_path, resolver, resolver_game_id, &texture_error);
+	} else {
+		Ref<SourcePPVTF> vtf;
+		vtf.instantiate();
+		vtf->set_resolver(resolver);
+		vtf->set_resolver_game_id(resolver_game_id);
+		texture_error = vtf->open(base_texture_path);
+		if (texture_error == OK) {
+			image = vtf->get_image();
+		}
+	}
+	if (texture_error != OK) {
+		Dictionary texture_metadata;
+		texture_metadata["material_id"] = p_material_id;
+		texture_metadata["material_name"] = material_name;
+		texture_metadata["material_path"] = material_path;
+		texture_metadata["texture_role"] = "$basetexture";
+		texture_metadata["requested_texture_path"] = base_texture_request_path;
+		texture_metadata["resolved_texture_path"] = base_texture_path;
+		texture_metadata["reason"] = "texture_open_failed";
+		_record_asset_metadata(r_asset_metadata, base_texture_path, "texture", material_type, true, texture_metadata);
+		if (p_warn_missing) {
+			WARN_PRINT(vformat("SourcePP BSP texture '%s' referenced by material '%s' could not be opened.", base_texture_path, material_path));
+		}
 		return fallback_image;
 	}
 
-	Ref<Image> image = vtf->get_image();
 	if (image.is_null() || image->is_empty()) {
+		Dictionary texture_metadata;
+		texture_metadata["material_id"] = p_material_id;
+		texture_metadata["material_name"] = material_name;
+		texture_metadata["material_path"] = material_path;
+		texture_metadata["texture_role"] = "$basetexture";
+		texture_metadata["requested_texture_path"] = base_texture_request_path;
+		texture_metadata["resolved_texture_path"] = base_texture_path;
+		texture_metadata["reason"] = "texture_image_empty";
+		_record_asset_metadata(r_asset_metadata, base_texture_path, "texture", material_type, true, texture_metadata);
+		if (p_warn_missing) {
+			WARN_PRINT(vformat("SourcePP BSP texture '%s' referenced by material '%s' did not produce an image.", base_texture_path, material_path));
+		}
 		return fallback_image;
 	}
+	image = image->duplicate();
 
 	if (image->is_compressed() && image->decompress() != OK) {
+		Dictionary texture_metadata;
+		texture_metadata["material_id"] = p_material_id;
+		texture_metadata["material_name"] = material_name;
+		texture_metadata["material_path"] = material_path;
+		texture_metadata["texture_role"] = "$basetexture";
+		texture_metadata["requested_texture_path"] = base_texture_request_path;
+		texture_metadata["resolved_texture_path"] = base_texture_path;
+		texture_metadata["reason"] = "texture_decompress_failed";
+		_record_asset_metadata(r_asset_metadata, base_texture_path, "texture", material_type, true, texture_metadata);
+		if (p_warn_missing) {
+			WARN_PRINT(vformat("SourcePP BSP texture '%s' referenced by material '%s' could not be decompressed.", base_texture_path, material_path));
+		}
 		return fallback_image;
 	}
 	image->clear_mipmaps();
@@ -672,22 +920,52 @@ Ref<Image> SourcePPBSP::_load_material_texture_array_image(int p_material_id, Im
 	if (r_alpha_mode != nullptr) {
 		*r_alpha_mode = image->detect_alpha();
 	}
+	const Image::AlphaMode alpha_mode = image->detect_alpha();
+	Dictionary texture_metadata;
+	texture_metadata["material_id"] = p_material_id;
+	texture_metadata["material_name"] = material_name;
+	texture_metadata["material_path"] = material_path;
+	texture_metadata["texture_role"] = "$basetexture";
+	texture_metadata["requested_texture_path"] = base_texture_request_path;
+	texture_metadata["resolved_texture_path"] = base_texture_path;
+	texture_metadata["alpha_mode"] = _alpha_mode_to_string(alpha_mode);
+	texture_metadata["width"] = image->get_width();
+	texture_metadata["height"] = image->get_height();
+	_record_asset_metadata(r_asset_metadata, base_texture_path, "texture", material_type, false, texture_metadata);
 	image->generate_mipmaps();
 	return image;
 }
 
-bool SourcePPBSP::_is_material_transparent(int p_material_id) const {
+Vector<Ref<Image>> SourcePPBSP::_load_texture_array_images(SourcePPImportCache *p_import_cache, const Ref<Image> &p_fallback_image, Dictionary *r_asset_metadata, std::vector<Image::AlphaMode> &r_alpha_modes, bool p_warn_missing) const {
+	Vector<Ref<Image>> layer_images;
+	layer_images.resize(material_paths.size() + 1);
+	r_alpha_modes.clear();
+	r_alpha_modes.resize(material_paths.size(), Image::ALPHA_NONE);
+	for (int material_id = 0; material_id < material_paths.size(); material_id++) {
+		layer_images.write[material_id] = _load_material_texture_array_image(material_id, p_import_cache, p_fallback_image, &r_alpha_modes[static_cast<size_t>(material_id)], r_asset_metadata, p_warn_missing);
+	}
+	layer_images.write[material_paths.size()] = p_fallback_image.is_valid() ? p_fallback_image : _create_fallback_texture_array_image();
+	return layer_images;
+}
+
+bool SourcePPBSP::_is_material_transparent(int p_material_id, Image::AlphaMode p_alpha_mode, SourcePPImportCache *p_import_cache) const {
 	if (p_material_id < 0 || p_material_id >= material_paths.size()) {
 		return false;
 	}
 
 	const String material_path = _resolve_material_path(material_paths[p_material_id]);
 	if (!material_path.is_empty()) {
+		Error vmt_error = OK;
 		Ref<SourcePPVMT> vmt;
-		vmt.instantiate();
-		vmt->set_resolver(resolver);
-		vmt->set_resolver_game_id(resolver_game_id);
-		if (vmt->open(material_path) == OK) {
+		if (p_import_cache != nullptr) {
+			vmt = p_import_cache->get_vmt(material_path, resolver, resolver_game_id, &vmt_error);
+		} else {
+			vmt.instantiate();
+			vmt->set_resolver(resolver);
+			vmt->set_resolver_game_id(resolver_game_id);
+			vmt_error = vmt->open(material_path);
+		}
+		if (vmt_error == OK && vmt.is_valid()) {
 			if (_source_material_bool_value(vmt, "$translucent") || _source_material_bool_value(vmt, "$additive")) {
 				return true;
 			}
@@ -697,22 +975,13 @@ bool SourcePPBSP::_is_material_transparent(int p_material_id) const {
 		}
 	}
 
-	Image::AlphaMode alpha_mode = Image::ALPHA_NONE;
-	_load_material_texture_array_image(p_material_id, &alpha_mode);
-	return alpha_mode == Image::ALPHA_BLEND;
+	return false;
 }
 
-Ref<Material> SourcePPBSP::_create_texture_array_material(bool p_transparent) const {
-	Vector<Ref<Image>> layer_images;
-	layer_images.resize(material_paths.size() + 1);
-	for (int material_id = 0; material_id < material_paths.size(); material_id++) {
-		layer_images.write[material_id] = _load_material_texture_array_image(material_id);
-	}
-	layer_images.write[material_paths.size()] = _create_fallback_texture_array_image();
-
+Ref<Material> SourcePPBSP::_create_texture_array_material(bool p_transparent, const Vector<Ref<Image>> &p_layer_images) const {
 	Ref<Texture2DArray> texture_array;
 	texture_array.instantiate();
-	const Error texture_array_error = texture_array->create_from_images(layer_images);
+	const Error texture_array_error = texture_array->create_from_images(p_layer_images);
 	ERR_FAIL_COND_V_MSG(texture_array_error != OK, Ref<Material>(), "Failed to create a BSP texture array.");
 
 	Ref<Shader> shader;
@@ -760,12 +1029,12 @@ Ref<Material> SourcePPBSP::_create_texture_array_material(bool p_transparent) co
 	return material;
 }
 
-Error SourcePPBSP::_build_atlased_surface_arrays(bool p_transparent, const std::vector<bool> &p_transparent_materials, Array &r_arrays) const {
-	ERR_FAIL_COND_V_MSG(halfedge_mesh.is_null(), ERR_UNCONFIGURED, "Half-edge mesh must be available before creating a render mesh.");
+Error SourcePPBSP::_build_atlased_surface_arrays(const Ref<HalfEdgeMesh> &p_mesh, const PackedInt32Array &p_face_material_ids, const Array &p_face_uvs, bool p_transparent, const std::vector<bool> &p_transparent_materials, Array &r_arrays) const {
+	ERR_FAIL_COND_V_MSG(p_mesh.is_null(), ERR_UNCONFIGURED, "Half-edge mesh must be available before creating a render mesh.");
 
 	r_arrays.resize(Mesh::ARRAY_MAX);
 
-	const PackedVector3Array all_vertices = halfedge_mesh->get_vertices();
+	const PackedVector3Array all_vertices = p_mesh->get_vertices();
 	PackedVector3Array surface_vertices;
 	PackedVector3Array surface_normals;
 	PackedVector2Array surface_uvs;
@@ -773,14 +1042,14 @@ Error SourcePPBSP::_build_atlased_surface_arrays(bool p_transparent, const std::
 	PackedInt32Array surface_indices;
 
 	const int fallback_texture_layer = material_paths.size();
-	const int face_count = halfedge_mesh->get_face_count();
+	const int face_count = p_mesh->get_face_count();
 	for (int face_index = 0; face_index < face_count; face_index++) {
-		const PackedInt32Array face_vertex_indices = halfedge_mesh->get_face_vertex_indices(face_index);
+		const PackedInt32Array face_vertex_indices = p_mesh->get_face_vertex_indices(face_index);
 		if (face_vertex_indices.size() < 3) {
 			continue;
 		}
 
-		const Dictionary face_projection = halfedge_mesh->get_face_projection(face_index);
+		const Dictionary face_projection = p_mesh->get_face_projection(face_index);
 		ERR_FAIL_COND_V_MSG(!face_projection.has("vertices"), ERR_INVALID_DATA, "Half-edge face projection data is missing for BSP triangulation.");
 		const PackedVector2Array projected_vertices = face_projection["vertices"];
 		const PackedInt32Array triangulated_indices = _triangulate_projected_polygon_preserve_winding(projected_vertices);
@@ -789,17 +1058,17 @@ Error SourcePPBSP::_build_atlased_surface_arrays(bool p_transparent, const std::
 		}
 
 		Vector3 face_normal = Vector3(0, 1, 0);
-		const Dictionary face_data = halfedge_mesh->get_face_data(face_index);
+		const Dictionary face_data = p_mesh->get_face_data(face_index);
 		if (face_data.has("normal")) {
 			face_normal = face_data["normal"];
 		}
 
 		PackedVector2Array face_texture_uvs;
-		if (face_index < face_uvs.size()) {
-			face_texture_uvs = face_uvs[face_index];
+		if (face_index < p_face_uvs.size()) {
+			face_texture_uvs = p_face_uvs[face_index];
 		}
 
-		const int face_material_id = face_index < face_material_ids.size() ? face_material_ids[face_index] : -1;
+		const int face_material_id = face_index < p_face_material_ids.size() ? p_face_material_ids[face_index] : -1;
 		const bool face_is_transparent = face_material_id >= 0 && static_cast<size_t>(face_material_id) < p_transparent_materials.size() && p_transparent_materials[static_cast<size_t>(face_material_id)];
 		if (face_is_transparent != p_transparent) {
 			continue;
@@ -827,6 +1096,45 @@ Error SourcePPBSP::_build_atlased_surface_arrays(bool p_transparent, const std::
 	r_arrays[Mesh::ARRAY_CUSTOM0] = surface_texture_layers;
 	r_arrays[Mesh::ARRAY_INDEX] = surface_indices;
 	return OK;
+}
+
+Ref<ArrayMesh> SourcePPBSP::_create_model_array_mesh(int p_model_index, const Vector<Ref<Image>> &p_layer_images, const std::vector<bool> &p_transparent_materials, const Dictionary &p_asset_metadata) const {
+	PackedVector3Array model_vertices;
+	Array model_faces;
+	PackedInt32Array model_face_material_ids;
+	Array model_face_uvs;
+	const Error model_error = _build_model_mesh_data(p_model_index, model_vertices, model_faces, model_face_material_ids, model_face_uvs);
+	ERR_FAIL_COND_V(model_error != OK, Ref<ArrayMesh>());
+
+	Ref<HalfEdgeMesh> model_halfedge_mesh;
+	model_halfedge_mesh.instantiate();
+	const Error set_faces_error = model_halfedge_mesh->set_faces(model_vertices, model_faces);
+	ERR_FAIL_COND_V_MSG(set_faces_error != OK, Ref<ArrayMesh>(), "Failed to create a half-edge mesh from BSP bmodel faces.");
+
+	Ref<ArrayMesh> render_mesh;
+	render_mesh.instantiate();
+
+	const BitField<Mesh::ArrayFormat> surface_flags = static_cast<uint64_t>(Mesh::ARRAY_CUSTOM_R_FLOAT) << Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT;
+	for (int surface_type = 0; surface_type < 2; surface_type++) {
+		const bool transparent_surface = surface_type == 1;
+		Array arrays;
+		const Error build_surface_error = _build_atlased_surface_arrays(model_halfedge_mesh, model_face_material_ids, model_face_uvs, transparent_surface, p_transparent_materials, arrays);
+		ERR_FAIL_COND_V(build_surface_error != OK, Ref<ArrayMesh>());
+
+		const PackedVector3Array surface_vertices = arrays[Mesh::ARRAY_VERTEX];
+		if (surface_vertices.is_empty()) {
+			continue;
+		}
+
+		render_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, TypedArray<Array>(), Dictionary(), surface_flags);
+		Ref<Material> surface_material = _create_texture_array_material(transparent_surface, p_layer_images);
+		if (surface_material.is_valid()) {
+			surface_material->set_meta("sourcepp_bsp_asset_metadata", p_asset_metadata);
+		}
+		render_mesh->surface_set_material(render_mesh->get_surface_count() - 1, surface_material);
+	}
+
+	return render_mesh;
 }
 
 Error SourcePPBSP::_build_model_mesh_data(int p_model_index, PackedVector3Array &r_vertices, Array &r_faces, PackedInt32Array &r_face_material_ids, Array &r_face_uvs) const {
@@ -997,6 +1305,7 @@ void SourcePPBSP::close() {
 	bsp_edges.clear();
 	bsp_surf_edges.clear();
 	bsp_models.clear();
+	bsp_entities.clear();
 	bsp_texture_info.clear();
 	bsp_texture_data.clear();
 	texdata_to_material_id.clear();
@@ -1031,43 +1340,133 @@ PackedStringArray SourcePPBSP::get_material_paths() const {
 }
 
 Node3D *SourcePPBSP::create_node() const {
-	ERR_FAIL_COND_V_MSG(halfedge_mesh.is_null(), nullptr, "Half-edge mesh must be available before creating a BSP node.");
+	ERR_FAIL_COND_V_MSG(bsp == nullptr, nullptr, "No BSP is currently open.");
 
-	Ref<ArrayMesh> render_mesh;
-	render_mesh.instantiate();
+	SourcePPImportCache import_cache;
+	const Ref<Image> fallback_image = _create_fallback_texture_array_image();
+	Dictionary asset_metadata;
+	std::vector<Image::AlphaMode> material_alpha_modes;
+	const Vector<Ref<Image>> layer_images = _load_texture_array_images(&import_cache, fallback_image, &asset_metadata, material_alpha_modes, true);
 
 	std::vector<bool> transparent_materials;
 	transparent_materials.resize(material_paths.size(), false);
 	for (int material_id = 0; material_id < material_paths.size(); material_id++) {
-		transparent_materials[static_cast<size_t>(material_id)] = _is_material_transparent(material_id);
+		const Image::AlphaMode alpha_mode = static_cast<size_t>(material_id) < material_alpha_modes.size() ? material_alpha_modes[static_cast<size_t>(material_id)] : Image::ALPHA_NONE;
+		transparent_materials[static_cast<size_t>(material_id)] = _is_material_transparent(material_id, alpha_mode, &import_cache);
 	}
 
-	const BitField<Mesh::ArrayFormat> surface_flags = static_cast<uint64_t>(Mesh::ARRAY_CUSTOM_R_FLOAT) << Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT;
-	for (int surface_type = 0; surface_type < 2; surface_type++) {
-		const bool transparent_surface = surface_type == 1;
-		Array arrays;
-		const Error build_surface_error = _build_atlased_surface_arrays(transparent_surface, transparent_materials, arrays);
-		ERR_FAIL_COND_V(build_surface_error != OK, nullptr);
-
-		const PackedVector3Array surface_vertices = arrays[Mesh::ARRAY_VERTEX];
-		if (surface_vertices.is_empty()) {
-			continue;
-		}
-
-		render_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, TypedArray<Array>(), Dictionary(), surface_flags);
-		render_mesh->surface_set_material(render_mesh->get_surface_count() - 1, _create_texture_array_material(transparent_surface));
-	}
+	const Ref<ArrayMesh> render_mesh = _create_model_array_mesh(model_index, layer_images, transparent_materials, asset_metadata);
+	ERR_FAIL_COND_V(render_mesh.is_null(), nullptr);
 
 	Node3D *root_node = memnew(Node3D);
 	root_node->set_name(source_path.is_empty() ? String("SourcePPBSP") : source_path.get_file().get_basename());
 	root_node->set_meta("sourcepp_bsp_path", source_path);
 	root_node->set_meta("sourcepp_bsp_model_index", model_index);
+	root_node->set_meta("sourcepp_bsp_asset_metadata", asset_metadata);
 
 	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
 	mesh_instance->set_name("WorldGeometry");
 	mesh_instance->set_mesh(render_mesh);
 	mesh_instance->set_meta("sourcepp_bsp_path", source_path);
 	mesh_instance->set_meta("sourcepp_bsp_model_index", model_index);
+	mesh_instance->set_meta("sourcepp_bsp_asset_metadata", asset_metadata);
 	root_node->add_child(mesh_instance);
+
+	if (model_index != 0) {
+		return root_node;
+	}
+
+	Node3D *bmodels_node = memnew(Node3D);
+	bmodels_node->set_name("BModels");
+	root_node->add_child(bmodels_node);
+
+	std::vector<bool> referenced_models;
+	referenced_models.resize(bsp_models.size(), false);
+	if (!referenced_models.empty()) {
+		referenced_models[0] = true;
+	}
+
+	for (int entity_index = 0; entity_index < static_cast<int>(bsp_entities.size()); entity_index++) {
+		const bsppp::BSPEntityKeyValues &entity = bsp_entities[static_cast<size_t>(entity_index)];
+		const int bmodel_index = _get_entity_bmodel_index(entity);
+		if (bmodel_index < 0) {
+			continue;
+		}
+		if (bmodel_index == 0 || bmodel_index >= static_cast<int>(bsp_models.size())) {
+			WARN_PRINT(vformat("SourcePP BSP entity %d references invalid bmodel '*%d' while importing '%s'.", entity_index, bmodel_index, source_path));
+			continue;
+		}
+		referenced_models[static_cast<size_t>(bmodel_index)] = true;
+
+		const String classname = _get_entity_value(entity, "classname", "bmodel");
+		const String targetname = _get_entity_value(entity, "targetname");
+		String node_name = vformat("BModel_%d_%s", bmodel_index, classname);
+		if (!targetname.is_empty()) {
+			node_name += "_" + targetname;
+		}
+		node_name = node_name.validate_node_name();
+		if (node_name.is_empty()) {
+			node_name = vformat("BModel_%d", bmodel_index);
+		}
+
+		Node3D *entity_node = memnew(Node3D);
+		entity_node->set_name(node_name);
+		entity_node->set_transform(_get_entity_transform(entity));
+		entity_node->set_meta("sourcepp_bsp_model_index", bmodel_index);
+		entity_node->set_meta("sourcepp_bsp_entity_index", entity_index);
+		entity_node->set_meta("sourcepp_bsp_entity_classname", classname);
+		if (!targetname.is_empty()) {
+			entity_node->set_meta("sourcepp_bsp_entity_targetname", targetname);
+		}
+		entity_node->set_meta("sourcepp_bsp_entity_keyvalues", _entity_to_dictionary(entity));
+		bmodels_node->add_child(entity_node);
+
+		const Ref<ArrayMesh> bmodel_mesh = _create_model_array_mesh(bmodel_index, layer_images, transparent_materials, asset_metadata);
+		if (bmodel_mesh.is_null() || bmodel_mesh->get_surface_count() == 0) {
+			WARN_PRINT(vformat("SourcePP BSP bmodel '*%d' referenced by entity %d did not produce visible geometry.", bmodel_index, entity_index));
+			continue;
+		}
+
+		MeshInstance3D *bmodel_mesh_instance = memnew(MeshInstance3D);
+		bmodel_mesh_instance->set_name("Geometry");
+		bmodel_mesh_instance->set_mesh(bmodel_mesh);
+		bmodel_mesh_instance->set_meta("sourcepp_bsp_path", source_path);
+		bmodel_mesh_instance->set_meta("sourcepp_bsp_model_index", bmodel_index);
+		bmodel_mesh_instance->set_meta("sourcepp_bsp_entity_index", entity_index);
+		bmodel_mesh_instance->set_meta("sourcepp_bsp_asset_metadata", asset_metadata);
+		entity_node->add_child(bmodel_mesh_instance);
+	}
+
+	Node3D *unreferenced_node = nullptr;
+	for (int bmodel_index = 1; bmodel_index < static_cast<int>(bsp_models.size()); bmodel_index++) {
+		if (static_cast<size_t>(bmodel_index) < referenced_models.size() && referenced_models[static_cast<size_t>(bmodel_index)]) {
+			continue;
+		}
+
+		const Ref<ArrayMesh> bmodel_mesh = _create_model_array_mesh(bmodel_index, layer_images, transparent_materials, asset_metadata);
+		if (bmodel_mesh.is_null() || bmodel_mesh->get_surface_count() == 0) {
+			continue;
+		}
+		if (unreferenced_node == nullptr) {
+			unreferenced_node = memnew(Node3D);
+			unreferenced_node->set_name("Unreferenced");
+			bmodels_node->add_child(unreferenced_node);
+		}
+
+		Node3D *bmodel_node = memnew(Node3D);
+		bmodel_node->set_name(vformat("BModel_%d", bmodel_index));
+		bmodel_node->set_meta("sourcepp_bsp_model_index", bmodel_index);
+		bmodel_node->set_meta("sourcepp_bsp_unreferenced", true);
+		unreferenced_node->add_child(bmodel_node);
+
+		MeshInstance3D *bmodel_mesh_instance = memnew(MeshInstance3D);
+		bmodel_mesh_instance->set_name("Geometry");
+		bmodel_mesh_instance->set_mesh(bmodel_mesh);
+		bmodel_mesh_instance->set_meta("sourcepp_bsp_path", source_path);
+		bmodel_mesh_instance->set_meta("sourcepp_bsp_model_index", bmodel_index);
+		bmodel_mesh_instance->set_meta("sourcepp_bsp_asset_metadata", asset_metadata);
+		bmodel_node->add_child(bmodel_mesh_instance);
+	}
+
 	return root_node;
 }

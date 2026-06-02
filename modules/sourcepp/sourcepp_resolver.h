@@ -10,6 +10,7 @@
 
 #include "core/error/error_list.h"
 #include "core/object/ref_counted.h"
+#include "core/variant/dictionary.h"
 
 #include <filesystem>
 #include <memory>
@@ -73,6 +74,7 @@ public:
 	PackedStringArray get_registered_games() const;
 	Dictionary get_entry_map(const String &p_search_path = "GAME") const;
 	String get_file_vpk_path(const String &p_file_path, const String &p_game_id = String(), const String &p_search_path = "GAME") const;
+	Dictionary get_file_source_info(const String &p_file_path, const String &p_game_id = String(), const String &p_search_path = "GAME") const;
 	bool has_file(const String &p_file_path, const String &p_game_id = String(), const String &p_search_path = "GAME") const;
 	PackedByteArray read_file(const String &p_file_path, const String &p_game_id = String(), const String &p_search_path = "GAME") const;
 };

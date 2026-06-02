@@ -21,14 +21,17 @@
 		<method name="create_node">
 			<return type="Node3D" />
 			<description>
-				Creates a 3D node hierarchy from the current [member halfedge_mesh] and [member face_material_ids].
-				The returned root node stores BSP metadata and contains a [MeshInstance3D] child named [code]WorldGeometry[/code].
+				Creates a 3D node hierarchy from the selected BSP brush model.
+				When [member model_index] is [code]0[/code], the returned root node stores BSP metadata, contains a [MeshInstance3D] child named [code]WorldGeometry[/code] for worldspawn, and contains a [code]BModels[/code] child with placed brush-model entity nodes for entity [code]model="*N"[/code] references.
+				Brush entity nodes store [code]sourcepp_bsp_entity_keyvalues[/code] plus model/entity index metadata, and their [code]Geometry[/code] child stores the generated mesh.
+				When [member model_index] is nonzero, only that brush model is emitted for inspection.
 				World geometry is emitted as separate opaque and transparent Godot mesh surfaces using generated shader materials.
 				Each shader samples a [Texture2DArray], while each vertex stores the BSP material layer in a custom mesh attribute.
 				Opaque materials use alpha scissor for cutout texture pixels; blended materials are kept in the transparent surface.
 				When a [member resolver] is assigned, referenced VMT and VTF files are loaded while creating the node.
 				The BSP's embedded Pakfile lump is mounted into the resolver while the BSP is open, allowing map-packed materials and textures to resolve before external game content.
 				Missing materials use a generated checker texture layer.
+				The returned root node, [code]WorldGeometry[/code] child, and generated shader materials store [code]sourcepp_bsp_asset_metadata[/code], a dictionary keyed by resolved or requested asset path. Each value includes [code]asset_source[/code] ([code]"PAK"[/code], [code]"non-PAK"[/code], or [code]"unknown"[/code]), [code]is_missing[/code], [code]asset_type[/code], [code]material_type[/code], and a nested [code]metadata[/code] dictionary.
 			</description>
 		</method>
 		<method name="get_face_material_ids">
@@ -102,6 +105,7 @@
 			<description>
 				Selects which BSP brush model is mirrored into [member halfedge_mesh] and [member face_material_ids].
 				If a BSP is already open, changing this rebuilds the current editable mesh state.
+				[method create_node] imports the full map scene with entity-placed bmodels when this is [code]0[/code], and imports only the selected brush model when nonzero.
 			</description>
 		</method>
 		<method name="set_resolver">

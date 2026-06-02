@@ -11,6 +11,7 @@
 #include "core/error/error_list.h"
 #include "core/io/file_access.h"
 #include "core/object/ref_counted.h"
+#include "core/templates/hash_map.h"
 #include "scene/resources/3d/skin.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/material.h"
@@ -28,6 +29,7 @@ struct StudioModel;
 
 class Skeleton3D;
 class Node3D;
+class SourcePPImportCache;
 class SourcePPResolver;
 
 class SourcePPMDL : public RefCounted {
@@ -52,7 +54,7 @@ class SourcePPMDL : public RefCounted {
 	static std::vector<std::byte> _to_byte_vector(const Vector<uint8_t> &p_data);
 	String _resolve_companion_path(const String &p_model_path, const PackedStringArray &p_candidates) const;
 	String _resolve_material_path(const String &p_material_name) const;
-	Ref<Material> _create_import_material(int p_material_index, int p_skin_family) const;
+	Ref<Material> _create_import_material(int p_material_index, int p_skin_family, SourcePPImportCache *p_import_cache, HashMap<String, Ref<Material>> *r_material_cache) const;
 	Vector<uint8_t> _read_file_bytes(const String &p_path, Error *r_error) const;
 
 	Error _open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<uint8_t> &p_vtx_data, const Vector<uint8_t> &p_vvd_data, const Vector<uint8_t> &p_anim_block_data = Vector<uint8_t>());

@@ -8,6 +8,7 @@
 
 #include "sourcepp_vmt.h"
 
+#include "sourcepp_import_cache.h"
 #include "sourcepp_resolver.h"
 #include "sourcepp_vtf.h"
 
@@ -93,6 +94,44 @@ String _ensure_vtf_extension(const String &p_path) {
 	return p_path.get_extension().to_lower() == "vtf" ? p_path : p_path + ".vtf";
 }
 
+String _ensure_vmt_extension(const String &p_path) {
+	return p_path.get_extension().to_lower() == "vmt" ? p_path : p_path + ".vmt";
+}
+
+bool _is_patch_material(const VMTElement *p_root) {
+	return p_root != nullptr && _string_from_utf8(p_root->getKey()).strip_edges().to_lower() == "patch";
+}
+
+bool _get_child_value_for_key(const VMTElement *p_parent, const std::string &p_key, String *r_value) {
+	if (p_parent == nullptr || !(*p_parent)) {
+		return false;
+	}
+
+	const VMTElement &direct = (*p_parent)[p_key];
+	if (direct) {
+		if (r_value != nullptr) {
+			*r_value = _string_from_utf8(direct.getValue());
+		}
+		return true;
+	}
+
+	for (const VMTElement &child : p_parent->getChildren()) {
+		if (child.getChildCount() == 0) {
+			continue;
+		}
+
+		const VMTElement &nested = child[p_key];
+		if (nested) {
+			if (r_value != nullptr) {
+				*r_value = _string_from_utf8(nested.getValue());
+			}
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool _parse_bool_value(const VMTElement *p_element, bool p_default) {
 	if (p_element == nullptr || !(*p_element) || p_element->getValue().empty()) {
 		return p_default;
@@ -151,6 +190,13 @@ void SourcePPVMT::set_resolver_game_id(const String &p_game_id) {
 
 String SourcePPVMT::get_resolver_game_id() const {
 	return resolver_game_id;
+}
+
+void SourcePPVMT::set_import_cache(SourcePPImportCache *p_import_cache) {
+	import_cache = p_import_cache;
+	if (patch_include_material.is_valid()) {
+		patch_include_material->set_import_cache(p_import_cache);
+	}
 }
 
 std::string SourcePPVMT::_to_utf8(const String &p_string) {
@@ -212,6 +258,100 @@ PackedByteArray SourcePPVMT::_read_file_bytes(const String &p_path, Error *r_err
 	return PackedByteArray();
 }
 
+String SourcePPVMT::_resolve_material_asset_path(const String &p_material_path) const {
+	const String normalized_path = _normalize_texture_path(p_material_path);
+	if (normalized_path.is_empty()) {
+		return String();
+	}
+
+	PackedStringArray candidates;
+	candidates.push_back(normalized_path);
+	candidates.push_back(_ensure_vmt_extension(normalized_path));
+
+	if (!normalized_path.begins_with("materials/")) {
+		const String materials_path = "materials/" + normalized_path;
+		candidates.push_back(materials_path);
+		candidates.push_back(_ensure_vmt_extension(materials_path));
+	}
+
+	if (!source_path.is_empty()) {
+		const String normalized_source_path = source_path.replace("\\", "/");
+		const int materials_index = normalized_source_path.find("materials/");
+		if (materials_index >= 0) {
+			const String source_root = normalized_source_path.substr(0, materials_index);
+			candidates.push_back(source_root + _ensure_vmt_extension(normalized_path.begins_with("materials/") ? normalized_path : String("materials/") + normalized_path));
+		}
+	}
+
+	for (const String &candidate : candidates) {
+		if (_has_file(candidate)) {
+			return candidate;
+		}
+	}
+
+	return String();
+}
+
+Error SourcePPVMT::_load_patch_include() {
+	patch_include_material.unref();
+
+	const VMTElement *root = _get_root_element(get_material());
+	if (!_is_patch_material(root)) {
+		return OK;
+	}
+
+	const VMTElement &include_element = (*root)["include"];
+	if (!include_element) {
+		return OK;
+	}
+
+	const String include_path = _normalize_texture_path(_from_utf8(include_element.getValue()));
+	const String resolved_include_path = _resolve_material_asset_path(include_path);
+	if (resolved_include_path.is_empty() || (!source_path.is_empty() && resolved_include_path == source_path)) {
+		return OK;
+	}
+
+	Ref<SourcePPVMT> included_material;
+	if (import_cache != nullptr) {
+		Error open_error = OK;
+		included_material = import_cache->get_vmt(resolved_include_path, resolver, resolver_game_id, &open_error);
+		if (open_error != OK) {
+			return open_error;
+		}
+	} else {
+		included_material.instantiate();
+		included_material->set_resolver(resolver);
+		included_material->set_resolver_game_id(resolver_game_id);
+		const Error open_error = included_material->open(resolved_include_path);
+		if (open_error != OK) {
+			return open_error;
+		}
+	}
+
+	patch_include_material = included_material;
+	return OK;
+}
+
+bool SourcePPVMT::_get_patch_value_for_key(const String &p_key, String *r_value) const {
+	const VMTElement *root = _get_root_element(get_material());
+	if (!_is_patch_material(root)) {
+		return false;
+	}
+
+	const std::string key = _to_utf8(p_key);
+	const VMTElement &insert_block = (*root)["insert"];
+	if (_get_child_value_for_key(insert_block ? &insert_block : nullptr, key, r_value)) {
+		return true;
+	}
+
+	const VMTElement &replace_block = (*root)["replace"];
+	if (_get_child_value_for_key(replace_block ? &replace_block : nullptr, key, r_value)) {
+		return true;
+	}
+
+	return false;
+}
+
 String SourcePPVMT::_resolve_texture_asset_path(const String &p_texture_path) const {
 	const String normalized_path = _normalize_texture_path(p_texture_path);
 	if (normalized_path.is_empty()) {
@@ -257,6 +397,10 @@ Ref<Texture2D> SourcePPVMT::_load_texture_reference(const String &p_texture_path
 	}
 
 	Ref<SourcePPVTF> vtf;
+	if (import_cache != nullptr) {
+		return import_cache->get_vtf_texture(resolved_path, resolver, resolver_game_id);
+	}
+
 	vtf.instantiate();
 	vtf->set_resolver(resolver);
 	vtf->set_resolver_game_id(resolver_game_id);
@@ -281,7 +425,9 @@ const VMTDocument *SourcePPVMT::get_material() const {
 }
 
 Error SourcePPVMT::open(const String &p_path) {
+	SourcePPImportCache *current_import_cache = import_cache;
 	close();
+	import_cache = current_import_cache;
 
 	Error read_error = OK;
 	const PackedByteArray data = _read_file_bytes(p_path, &read_error);
@@ -293,11 +439,14 @@ Error SourcePPVMT::open(const String &p_path) {
 	}
 
 	source_path = p_path;
+	_load_patch_include();
 	return OK;
 }
 
 Error SourcePPVMT::open_from_buffer(const PackedByteArray &p_data) {
+	SourcePPImportCache *current_import_cache = import_cache;
 	close();
+	import_cache = current_import_cache;
 	ERR_FAIL_COND_V_MSG(p_data.is_empty(), ERR_INVALID_PARAMETER, "VMT data must not be empty.");
 
 	const std::vector<std::byte> bytes = _to_byte_vector(p_data);
@@ -308,11 +457,14 @@ Error SourcePPVMT::open_from_buffer(const PackedByteArray &p_data) {
 
 	material = std::move(parsed);
 	source_path = String();
+	_load_patch_include();
 	return OK;
 }
 
 void SourcePPVMT::close() {
+	patch_include_material.unref();
 	material.reset();
+	import_cache = nullptr;
 	source_path = String();
 }
 
@@ -326,6 +478,9 @@ String SourcePPVMT::get_path() const {
 
 String SourcePPVMT::get_shader() const {
 	ERR_FAIL_COND_V_MSG(get_material() == nullptr, String(), "SourcePPVMT must be opened before use.");
+	if (patch_include_material.is_valid()) {
+		return patch_include_material->get_shader();
+	}
 	const VMTElement *root = _get_root_element(get_material());
 	ERR_FAIL_NULL_V(root, String());
 	return _from_utf8(root->getKey());
@@ -345,6 +500,12 @@ Dictionary SourcePPVMT::get_properties() const {
 
 bool SourcePPVMT::has_value(const String &p_key) const {
 	ERR_FAIL_COND_V_MSG(get_material() == nullptr, false, "SourcePPVMT must be opened before use.");
+	if (_get_patch_value_for_key(p_key, nullptr)) {
+		return true;
+	}
+	if (patch_include_material.is_valid() && patch_include_material->has_value(p_key)) {
+		return true;
+	}
 	const VMTElement *root = _get_root_element(get_material());
 	ERR_FAIL_NULL_V(root, false);
 	return static_cast<bool>((*root)[_to_utf8(p_key)]);
@@ -352,6 +513,13 @@ bool SourcePPVMT::has_value(const String &p_key) const {
 
 String SourcePPVMT::get_value(const String &p_key, const String &p_default) const {
 	ERR_FAIL_COND_V_MSG(get_material() == nullptr, p_default, "SourcePPVMT must be opened before use.");
+	String patch_value;
+	if (_get_patch_value_for_key(p_key, &patch_value)) {
+		return patch_value;
+	}
+	if (patch_include_material.is_valid() && patch_include_material->has_value(p_key)) {
+		return patch_include_material->get_value(p_key, p_default);
+	}
 	const VMTElement *root = _get_root_element(get_material());
 	ERR_FAIL_NULL_V(root, p_default);
 	const VMTElement &element = (*root)[_to_utf8(p_key)];

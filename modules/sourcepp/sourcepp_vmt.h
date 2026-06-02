@@ -21,6 +21,7 @@
 #include <vector>
 
 class StandardMaterial3D;
+class SourcePPImportCache;
 class SourcePPResolver;
 class Texture2D;
 
@@ -28,7 +29,9 @@ class SourcePPVMT : public RefCounted {
 	GDCLASS(SourcePPVMT, RefCounted);
 
 	std::unique_ptr<kvpp::KV1<std::string>> material;
+	Ref<SourcePPVMT> patch_include_material;
 	Ref<SourcePPResolver> resolver;
+	SourcePPImportCache *import_cache = nullptr;
 	String resolver_game_id;
 	String source_path;
 
@@ -40,6 +43,9 @@ class SourcePPVMT : public RefCounted {
 	String _get_texture_path_for_key(const String &p_key) const;
 	bool _has_file(const String &p_path) const;
 	PackedByteArray _read_file_bytes(const String &p_path, Error *r_error) const;
+	String _resolve_material_asset_path(const String &p_material_path) const;
+	Error _load_patch_include();
+	bool _get_patch_value_for_key(const String &p_key, String *r_value) const;
 	String _resolve_texture_asset_path(const String &p_texture_path) const;
 	Ref<Texture2D> _load_texture_reference(const String &p_texture_path) const;
 
@@ -54,6 +60,7 @@ public:
 	Ref<SourcePPResolver> get_resolver() const;
 	void set_resolver_game_id(const String &p_game_id);
 	String get_resolver_game_id() const;
+	void set_import_cache(SourcePPImportCache *p_import_cache);
 
 	Error open(const String &p_path);
 	Error open_from_buffer(const PackedByteArray &p_data);

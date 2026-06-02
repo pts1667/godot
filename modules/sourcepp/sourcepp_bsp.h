@@ -10,8 +10,10 @@
 
 #include "core/error/error_list.h"
 #include "core/io/image.h"
+#include "core/math/transform_3d.h"
 #include "core/object/ref_counted.h"
 #include "core/variant/array.h"
+#include "core/variant/dictionary.h"
 
 #include <bsppp/BSP.h>
 
@@ -20,8 +22,10 @@
 #include <vector>
 
 class HalfEdgeMesh;
+class ArrayMesh;
 class Material;
 class Node3D;
+class SourcePPImportCache;
 class SourcePPResolver;
 
 class SourcePPBSP : public RefCounted {
@@ -43,6 +47,7 @@ class SourcePPBSP : public RefCounted {
 	std::vector<bsppp::BSPEdge> bsp_edges;
 	std::vector<bsppp::BSPSurfEdge> bsp_surf_edges;
 	std::vector<bsppp::BSPBrushModel> bsp_models;
+	std::vector<bsppp::BSPEntityKeyValues> bsp_entities;
 	std::vector<bsppp::BSPTextureInfo> bsp_texture_info;
 	std::vector<bsppp::BSPTextureData> bsp_texture_data;
 	PackedStringArray material_paths;
@@ -65,11 +70,19 @@ class SourcePPBSP : public RefCounted {
 	int _get_face_material_id(const bsppp::BSPFace &p_face) const;
 	Vector2 _get_face_uv(const bsppp::BSPFace &p_face, const sourcepp::math::Vec3f &p_position) const;
 	String _resolve_material_path(const String &p_material_name) const;
+	Dictionary _entity_to_dictionary(const bsppp::BSPEntityKeyValues &p_entity) const;
+	String _get_entity_value(const bsppp::BSPEntityKeyValues &p_entity, const String &p_key, const String &p_default = String()) const;
+	int _get_entity_bmodel_index(const bsppp::BSPEntityKeyValues &p_entity) const;
+	Transform3D _get_entity_transform(const bsppp::BSPEntityKeyValues &p_entity) const;
 	Ref<Image> _create_fallback_texture_array_image() const;
-	Ref<Image> _load_material_texture_array_image(int p_material_id, Image::AlphaMode *r_alpha_mode = nullptr) const;
-	bool _is_material_transparent(int p_material_id) const;
-	Ref<Material> _create_texture_array_material(bool p_transparent) const;
-	Error _build_atlased_surface_arrays(bool p_transparent, const std::vector<bool> &p_transparent_materials, Array &r_arrays) const;
+	Dictionary _get_asset_source_info(const String &p_asset_path, bool p_missing) const;
+	void _record_asset_metadata(Dictionary *r_asset_metadata, const String &p_asset_path, const String &p_asset_type, const String &p_material_type, bool p_missing, const Dictionary &p_metadata) const;
+	Ref<Image> _load_material_texture_array_image(int p_material_id, SourcePPImportCache *p_import_cache, const Ref<Image> &p_fallback_image, Image::AlphaMode *r_alpha_mode = nullptr, Dictionary *r_asset_metadata = nullptr, bool p_warn_missing = false) const;
+	Vector<Ref<Image>> _load_texture_array_images(SourcePPImportCache *p_import_cache, const Ref<Image> &p_fallback_image, Dictionary *r_asset_metadata, std::vector<Image::AlphaMode> &r_alpha_modes, bool p_warn_missing) const;
+	bool _is_material_transparent(int p_material_id, Image::AlphaMode p_alpha_mode, SourcePPImportCache *p_import_cache) const;
+	Ref<Material> _create_texture_array_material(bool p_transparent, const Vector<Ref<Image>> &p_layer_images) const;
+	Error _build_atlased_surface_arrays(const Ref<HalfEdgeMesh> &p_mesh, const PackedInt32Array &p_face_material_ids, const Array &p_face_uvs, bool p_transparent, const std::vector<bool> &p_transparent_materials, Array &r_arrays) const;
+	Ref<ArrayMesh> _create_model_array_mesh(int p_model_index, const Vector<Ref<Image>> &p_layer_images, const std::vector<bool> &p_transparent_materials, const Dictionary &p_asset_metadata) const;
 	Error _build_model_mesh_data(int p_model_index, PackedVector3Array &r_vertices, Array &r_faces, PackedInt32Array &r_face_material_ids, Array &r_face_uvs) const;
 
 public:

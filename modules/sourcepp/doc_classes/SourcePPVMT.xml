@@ -5,7 +5,8 @@
 	</brief_description>
 	<description>
 		[SourcePPVMT] exposes a first-cut wrapper over Source material scripts, which are KeyValues text files such as [code]VertexLitGeneric[/code] and [code]LightmappedGeneric[/code].
-		It can open a VMT from disk, memory, or a resolver-backed VPK entry, expose the root shader name and parsed properties, and build a stub [StandardMaterial3D] approximation using the supplied diffuse and detail textures.
+		It can open a VMT from disk, memory, or a resolver-backed VPK/PAK entry, expose the root shader name and parsed properties, and build a stub [StandardMaterial3D] approximation using the supplied diffuse and detail textures.
+		Source [code]patch[/code] materials inherit values from their [code]include[/code] material for shader and texture lookups, while [method get_properties] keeps exposing the parsed root block of the opened file.
 		The generated Godot material intentionally stays simple for now: Source-specific values that do not map cleanly to built-in Godot material features, such as Source's detail scale semantics, are preserved as metadata on the returned material for a future importer pass.
 		[codeblock]
 		var vmt := SourcePPVMT.new()
@@ -39,7 +40,7 @@
 		<method name="get_base_texture_path">
 			<return type="String" />
 			<description>
-				Returns the normalized [code]$basetexture[/code] reference, or an empty string if the VMT does not define one.
+				Returns the normalized [code]$basetexture[/code] reference, inherited through Source [code]patch[/code] includes when applicable, or an empty string if the effective VMT does not define one.
 			</description>
 		</method>
 		<method name="get_resolved_base_texture_path">
@@ -99,7 +100,7 @@
 		<method name="get_texture_dependencies">
 			<return type="Dictionary" />
 			<description>
-				Returns a dictionary of relevant VMT texture keys to their normalized raw asset references. The current set includes keys such as [code]$basetexture[/code], [code]$detail[/code], [code]$bumpmap[/code], [code]$selfillummask[/code], and [code]$envmapmask[/code] when present.
+				Returns a dictionary of relevant VMT texture keys to their normalized raw asset references. The current set includes keys such as [code]$basetexture[/code], [code]$detail[/code], [code]$bumpmap[/code], [code]$selfillummask[/code], and [code]$envmapmask[/code] when present. Source [code]patch[/code] materials report inherited effective texture references.
 			</description>
 		</method>
 		<method name="get_resolved_texture_dependencies">
@@ -123,7 +124,7 @@
 		<method name="get_shader">
 			<return type="String" />
 			<description>
-				Returns the root VMT shader key, such as [code]VertexLitGeneric[/code] or [code]LightmappedGeneric[/code].
+				Returns the root VMT shader key, such as [code]VertexLitGeneric[/code] or [code]LightmappedGeneric[/code]. For Source [code]patch[/code] materials, this returns the included material's effective shader when the include can be resolved.
 			</description>
 		</method>
 		<method name="get_value">

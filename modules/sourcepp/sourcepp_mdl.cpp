@@ -9,6 +9,7 @@
 #include "sourcepp_mdl.h"
 
 #include "source_anim_player.h"
+#include "sourcepp_import_cache.h"
 #include "sourcepp_resolver.h"
 #include "sourcepp_vmt.h"
 
@@ -593,7 +594,7 @@ String SourcePPMDL::_resolve_material_path(const String &p_material_name) const 
 	return String();
 }
 
-Ref<Material> SourcePPMDL::_create_import_material(int p_material_index, int p_skin_family) const {
+Ref<Material> SourcePPMDL::_create_import_material(int p_material_index, int p_skin_family, SourcePPImportCache *p_import_cache, HashMap<String, Ref<Material>> *r_material_cache) const {
 	ERR_FAIL_COND_V_MSG(get_model() == nullptr, Ref<Material>(), "SourcePPMDL must be opened before use.");
 
 	int resolved_material_index = p_material_index;
@@ -604,6 +605,11 @@ Ref<Material> SourcePPMDL::_create_import_material(int p_material_index, int p_s
 		}
 	}
 
+	const String material_cache_key = vformat("%d|%d", p_skin_family, resolved_material_index);
+	if (r_material_cache != nullptr && r_material_cache->has(material_cache_key)) {
+		return (*r_material_cache)[material_cache_key];
+	}
+
 	String material_name;
 	if (resolved_material_index >= 0 && resolved_material_index < static_cast<int>(get_model()->mdl.materials.size())) {
 		material_name = _from_utf8(get_model()->mdl.materials[static_cast<size_t>(resolved_material_index)].name);
@@ -612,11 +618,17 @@ Ref<Material> SourcePPMDL::_create_import_material(int p_material_index, int p_s
 	const String material_path = _resolve_material_path(material_name);
 	Ref<Material> material;
 	if (!material_path.is_empty()) {
+		Error vmt_error = OK;
 		Ref<SourcePPVMT> vmt;
-		vmt.instantiate();
-		vmt->set_resolver(resolver);
-		vmt->set_resolver_game_id(resolver_game_id);
-		if (vmt->open(material_path) == OK) {
+		if (p_import_cache != nullptr) {
+			vmt = p_import_cache->get_vmt(material_path, resolver, resolver_game_id, &vmt_error);
+		} else {
+			vmt.instantiate();
+			vmt->set_resolver(resolver);
+			vmt->set_resolver_game_id(resolver_game_id);
+			vmt_error = vmt->open(material_path);
+		}
+		if (vmt_error == OK && vmt.is_valid()) {
 			material = vmt->create_material();
 		}
 	}
@@ -631,6 +643,9 @@ Ref<Material> SourcePPMDL::_create_import_material(int p_material_index, int p_s
 	material->set_meta("sourcepp_mdl_skin_family", p_skin_family);
 	material->set_meta("sourcepp_mdl_material_name", material_name);
 	material->set_meta("sourcepp_mdl_material_path", material_path);
+	if (r_material_cache != nullptr) {
+		r_material_cache->insert(material_cache_key, material);
+	}
 	return material;
 }
 
@@ -1382,6 +1397,8 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 	String collision_source = "none";
 	String phy_collision_path;
 	std::unordered_map<int, BoneAttachment3D *> rigid_mesh_attachments;
+	SourcePPImportCache import_cache;
+	HashMap<String, Ref<Material>> material_cache;
 
 	auto get_or_create_rigid_mesh_attachment = [&](int p_bone) -> BoneAttachment3D * {
 		auto existing = rigid_mesh_attachments.find(p_bone);
@@ -1440,7 +1457,7 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 
 		const PackedInt32Array surface_material_indices = get_surface_material_indices(lod_index);
 		for (int surface_index = 0; surface_index < mesh->get_surface_count() && surface_index < surface_material_indices.size(); surface_index++) {
-			mesh_instance->set_surface_override_material(surface_index, _create_import_material(surface_material_indices[surface_index], p_skin_family));
+			mesh_instance->set_surface_override_material(surface_index, _create_import_material(surface_material_indices[surface_index], p_skin_family, &import_cache, &material_cache));
 		}
 
 		if (lod_count > 1) {

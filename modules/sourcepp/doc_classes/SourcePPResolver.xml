@@ -47,6 +47,17 @@
 				If [param game_id] is empty, registered games are searched in registration order.
 			</description>
 		</method>
+		<method name="get_file_source_info">
+			<return type="Dictionary" />
+			<param index="0" name="file_path" type="String" />
+			<param index="1" name="game_id" type="String" default="&quot;&quot;" />
+			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
+			<description>
+				Returns source metadata for [param file_path].
+				The returned dictionary contains [code]asset_source[/code] ([code]"PAK"[/code], [code]"non-PAK"[/code], or [code]"unknown"[/code]), [code]source_path[/code], [code]game_id[/code], [code]search_path[/code], [code]is_missing[/code], and [code]is_pak[/code].
+				If [param game_id] is empty, registered games are searched in registration order.
+			</description>
+		</method>
 		<method name="get_registered_games">
 			<return type="PackedStringArray" />
 			<description>
