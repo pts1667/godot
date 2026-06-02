@@ -19,6 +19,7 @@
 #include <vector>
 
 class HalfEdgeMesh;
+class Image;
 class Material;
 class Node3D;
 class SourcePPResolver;
@@ -34,6 +35,7 @@ class SourcePPBSP : public RefCounted {
 	int model_index = 0;
 	Ref<HalfEdgeMesh> halfedge_mesh;
 	PackedInt32Array face_material_ids;
+	Array face_uvs;
 	std::vector<bsppp::BSPVertex> bsp_vertices;
 	std::vector<bsppp::BSPFace> bsp_faces;
 	std::vector<bsppp::BSPEdge> bsp_edges;
@@ -57,10 +59,13 @@ class SourcePPBSP : public RefCounted {
 	Error _cache_material_paths();
 	Error _rebuild_current_halfedge_mesh();
 	int _get_face_material_id(const bsppp::BSPFace &p_face) const;
+	Vector2 _get_face_uv(const bsppp::BSPFace &p_face, const sourcepp::math::Vec3f &p_position) const;
 	String _resolve_material_path(const String &p_material_name) const;
-	Ref<Material> _create_import_material(int p_material_id) const;
-	Error _build_surface_arrays_for_material(int p_material_id, Array &r_arrays) const;
-	Error _build_model_mesh_data(int p_model_index, PackedVector3Array &r_vertices, Array &r_faces, PackedInt32Array &r_face_material_ids) const;
+	Ref<Image> _create_fallback_texture_array_image() const;
+	Ref<Image> _load_material_texture_array_image(int p_material_id) const;
+	Ref<Material> _create_texture_array_material() const;
+	Error _build_atlased_surface_arrays(Array &r_arrays) const;
+	Error _build_model_mesh_data(int p_model_index, PackedVector3Array &r_vertices, Array &r_faces, PackedInt32Array &r_face_material_ids, Array &r_face_uvs) const;
 
 public:
 	SourcePPBSP();
