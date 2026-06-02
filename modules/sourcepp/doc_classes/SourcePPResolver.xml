@@ -6,6 +6,7 @@
 	<description>
 		[SourcePPResolver] wraps the bundled SourcePP file-system layer and exposes a higher-level Godot API for Source game content lookup.
 		It can register local Source installs or Steam apps, build per-search-path maps of loose and VPK-backed entries, return the resolved source path for a virtual asset path, and read files such as [code]models/props/crate.mdl[/code] directly from registered content.
+		It can also mount the embedded Pakfile lump from a Source BSP so map-packed VMT, VTF, cubemap, or other assets resolve through the same lookup API.
 		If both a loose file and a VPK entry exist for the same virtual path, the loose file is preferred.
 		Classes such as [SourcePPMDL] and [SourceAnimPlayer] can use a resolver instance to fetch companion assets from VPKs instead of requiring loose files on disk.
 		[codeblock]
@@ -81,6 +82,17 @@
 				Registers a local Source game folder containing [code]gameinfo.txt[/code]. The stored game ID is derived from the folder name.
 			</description>
 		</method>
+		<method name="register_bsp_pakfile">
+			<return type="int" enum="Error" />
+			<param index="0" name="bsp_path" type="String" />
+			<param index="1" name="game_id" type="String" default="&quot;&quot;" />
+			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
+			<description>
+				Mounts the embedded Pakfile lump from a Source BSP into the resolver.
+				When [param game_id] is provided, the packed entries are associated with that game registration. Otherwise, they are searched before registered games.
+				Loose files already indexed for the same virtual path are not overridden.
+			</description>
+		</method>
 		<method name="register_steam_game">
 			<return type="int" enum="Error" />
 			<param index="0" name="app_id" type="int" />
@@ -94,6 +106,15 @@
 			<param index="0" name="game_id" type="String" />
 			<description>
 				Unregisters the requested game ID. Returns [code]true[/code] if a registration was removed.
+			</description>
+		</method>
+		<method name="unregister_bsp_pakfile">
+			<return type="bool" />
+			<param index="0" name="bsp_path" type="String" />
+			<param index="1" name="game_id" type="String" default="&quot;&quot;" />
+			<param index="2" name="search_path" type="String" default="&quot;GAME&quot;" />
+			<description>
+				Unmounts entries previously added with [method register_bsp_pakfile].
 			</description>
 		</method>
 	</methods>

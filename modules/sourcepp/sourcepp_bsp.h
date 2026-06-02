@@ -9,6 +9,7 @@
 #pragma once
 
 #include "core/error/error_list.h"
+#include "core/io/image.h"
 #include "core/object/ref_counted.h"
 #include "core/variant/array.h"
 
@@ -19,7 +20,6 @@
 #include <vector>
 
 class HalfEdgeMesh;
-class Image;
 class Material;
 class Node3D;
 class SourcePPResolver;
@@ -32,6 +32,8 @@ class SourcePPBSP : public RefCounted {
 	String resolver_game_id;
 	String source_path;
 	String temporary_backing_path;
+	String mounted_bsp_pakfile_path;
+	String mounted_bsp_pakfile_game_id;
 	int model_index = 0;
 	Ref<HalfEdgeMesh> halfedge_mesh;
 	PackedInt32Array face_material_ids;
@@ -54,6 +56,8 @@ class SourcePPBSP : public RefCounted {
 	static int32_t _read_lump_i32(const std::vector<std::byte> &p_bytes, size_t p_offset, bool p_big_endian);
 	static String _read_lump_string(const std::vector<std::byte> &p_bytes, int32_t p_offset);
 	void _clear_temporary_backing_file();
+	void _mount_current_bsp_pakfile();
+	void _unmount_current_bsp_pakfile();
 
 	Error _cache_lumps();
 	Error _cache_material_paths();
@@ -62,9 +66,10 @@ class SourcePPBSP : public RefCounted {
 	Vector2 _get_face_uv(const bsppp::BSPFace &p_face, const sourcepp::math::Vec3f &p_position) const;
 	String _resolve_material_path(const String &p_material_name) const;
 	Ref<Image> _create_fallback_texture_array_image() const;
-	Ref<Image> _load_material_texture_array_image(int p_material_id) const;
-	Ref<Material> _create_texture_array_material() const;
-	Error _build_atlased_surface_arrays(Array &r_arrays) const;
+	Ref<Image> _load_material_texture_array_image(int p_material_id, Image::AlphaMode *r_alpha_mode = nullptr) const;
+	bool _is_material_transparent(int p_material_id) const;
+	Ref<Material> _create_texture_array_material(bool p_transparent) const;
+	Error _build_atlased_surface_arrays(bool p_transparent, const std::vector<bool> &p_transparent_materials, Array &r_arrays) const;
 	Error _build_model_mesh_data(int p_model_index, PackedVector3Array &r_vertices, Array &r_faces, PackedInt32Array &r_face_material_ids, Array &r_face_uvs) const;
 
 public:

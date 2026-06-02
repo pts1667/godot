@@ -8,9 +8,13 @@
 
 #include "sourcepp_resolver.h"
 
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
+#include "core/io/zip_io.h"
 #include "core/error/error_macros.h"
 #include "core/object/class_db.h"
 
+#include <bsppp/BSP.h>
 #include <fspp/fspp.h>
 
 #include <algorithm>
@@ -54,6 +58,56 @@ PackedByteArray SourcePPResolver::_to_packed_byte_array(const std::vector<std::b
 	return out;
 }
 
+PackedByteArray SourcePPResolver::_read_zip_entry(const String &p_zip_path, const std::string &p_entry_path) {
+	Ref<FileAccess> zip_file = FileAccess::open(p_zip_path, FileAccess::READ);
+	ERR_FAIL_COND_V(zip_file.is_null(), PackedByteArray());
+
+	zlib_filefunc_def io = zipio_create_io(&zip_file);
+	unzFile zip = unzOpen2(p_zip_path.utf8().get_data(), &io);
+	ERR_FAIL_NULL_V(zip, PackedByteArray());
+
+	const String entry_path = _from_utf8(p_entry_path);
+	int error = godot_unzip_locate_file(zip, entry_path, false);
+	if (error != UNZ_OK) {
+		unzClose(zip);
+		return PackedByteArray();
+	}
+
+	error = unzOpenCurrentFile(zip);
+	if (error != UNZ_OK) {
+		unzClose(zip);
+		return PackedByteArray();
+	}
+
+	unz_file_info64 info;
+	String current_path;
+	error = godot_unzip_get_current_file_info(zip, info, current_path);
+	if (error != UNZ_OK || info.uncompressed_size > INT_MAX) {
+		unzCloseCurrentFile(zip);
+		unzClose(zip);
+		return PackedByteArray();
+	}
+
+	PackedByteArray out;
+	out.resize(static_cast<int>(info.uncompressed_size));
+	uint8_t *write = out.ptrw();
+	int remaining = out.size();
+	while (remaining > 0) {
+		const int bytes_read = unzReadCurrentFile(zip, write + (out.size() - remaining), remaining);
+		if (bytes_read <= 0) {
+			out = PackedByteArray();
+			break;
+		}
+		remaining -= bytes_read;
+	}
+
+	if (unzCloseCurrentFile(zip) != UNZ_OK) {
+		out = PackedByteArray();
+	}
+	unzClose(zip);
+	return out;
+}
+
 void SourcePPResolver::_index_search_path_directory(const std::filesystem::path &p_root_path, const std::string &p_base_path, std::unordered_map<std::string, RegisteredEntry> &r_entry_map) {
 	const std::filesystem::path base_directory = p_root_path / p_base_path;
 	std::error_code error;
@@ -92,6 +146,7 @@ void SourcePPResolver::_index_search_path_directory(const std::filesystem::path 
 		r_entry_map[entry_path] = RegisteredEntry{
 			.source_path = _to_utf8(_path_to_string(entry.path())),
 			.is_vpk = false,
+			.pack_file_index = -1,
 		};
 	}
 }
@@ -107,7 +162,7 @@ Error SourcePPResolver::_register_game(const std::string &p_game_id, std::unique
 		for (const auto &pack_file : pack_files) {
 			const std::string pack_file_path(pack_file->getFilepath());
 			pack_file->runForAllEntries([&entry_map, &pack_file_path](const std::string &p_path, const vpkpp::Entry &) {
-				entry_map.try_emplace(SourcePPResolver::_normalize_entry_path(SourcePPResolver::_from_utf8(p_path)), RegisteredEntry{ .source_path = pack_file_path, .is_vpk = true });
+				entry_map.try_emplace(SourcePPResolver::_normalize_entry_path(SourcePPResolver::_from_utf8(p_path)), RegisteredEntry{ .source_path = pack_file_path, .is_vpk = true, .pack_file_index = -1 });
 			});
 		}
 	}
@@ -159,16 +214,160 @@ Error SourcePPResolver::register_steam_game(int p_app_id, const String &p_game_i
 	return _register_game(_to_utf8(p_game_id.to_lower()), std::make_unique<fspp::FileSystem>(std::move(file_system.value())));
 }
 
-bool SourcePPResolver::unregister_game(const String &p_game_id) {
-	const std::string normalized_game_id = _to_utf8(p_game_id.strip_edges().to_lower());
-	if (!registered_games.erase(normalized_game_id)) {
+Error SourcePPResolver::register_bsp_pakfile(const String &p_bsp_path, const String &p_game_id, const String &p_search_path) {
+	ERR_FAIL_COND_V_MSG(p_bsp_path.is_empty(), ERR_INVALID_PARAMETER, "BSP path must not be empty.");
+
+	const String normalized_game_id_string = p_game_id.strip_edges().to_lower();
+	const std::string game_id = normalized_game_id_string.is_empty() ? std::string("__bsp_pakfiles") : _to_utf8(normalized_game_id_string);
+	const std::string search_path = _normalize_search_path(p_search_path);
+
+	bsppp::BSP bsp(_to_utf8(p_bsp_path), false);
+	ERR_FAIL_COND_V_MSG(!bsp, ERR_FILE_CANT_OPEN, "Could not open BSP file.");
+
+	const auto pak_lump = bsp.getLumpData(bsppp::BSPLump::PAKFILE);
+	if (!pak_lump.has_value() || pak_lump->empty()) {
+		return OK;
+	}
+
+	Error temp_error = OK;
+	Ref<FileAccess> temp_file = FileAccess::create_temp(FileAccess::WRITE_READ, "sourcepp_bsp_pak_", ".zip", true, &temp_error);
+	ERR_FAIL_COND_V_MSG(temp_error != OK || temp_file.is_null(), temp_error == OK ? ERR_CANT_CREATE : temp_error, "Failed to create a temporary BSP Pakfile backing archive.");
+
+	const String temporary_zip_path = temp_file->get_path_absolute();
+	const PackedByteArray pak_lump_bytes = _to_packed_byte_array(*pak_lump);
+	temp_file->store_buffer(pak_lump_bytes);
+	temp_file->flush();
+	temp_file->close();
+
+	Ref<FileAccess> zip_file = FileAccess::open(temporary_zip_path, FileAccess::READ);
+	if (zip_file.is_null()) {
+		DirAccess::remove_absolute(temporary_zip_path);
+		return ERR_FILE_CANT_OPEN;
+	}
+
+	zlib_filefunc_def io = zipio_create_io(&zip_file);
+	unzFile zip = unzOpen2(temporary_zip_path.utf8().get_data(), &io);
+	if (zip == nullptr) {
+		DirAccess::remove_absolute(temporary_zip_path);
+		return ERR_FILE_CANT_OPEN;
+	}
+
+	if (!registered_games.contains(game_id)) {
+		if (normalized_game_id_string.is_empty()) {
+			registration_order.insert(registration_order.begin(), game_id);
+		} else {
+			registration_order.push_back(game_id);
+		}
+	}
+
+	RegisteredGame &registered_game = registered_games[game_id];
+	const int pack_file_index = static_cast<int>(registered_game.pack_files.size());
+	const std::string source_path = _to_utf8(p_bsp_path);
+	auto &entry_map = registered_game.entry_map_by_search_path[search_path];
+
+	for (int zip_error = unzGoToFirstFile(zip); zip_error == UNZ_OK; zip_error = unzGoToNextFile(zip)) {
+		unz_file_info64 file_info;
+		String zip_entry_path;
+		if (godot_unzip_get_current_file_info(zip, file_info, zip_entry_path) != UNZ_OK || zip_entry_path.ends_with("/")) {
+			continue;
+		}
+
+		const std::string entry_path = _normalize_entry_path(zip_entry_path);
+		if (entry_path.empty()) {
+			continue;
+		}
+
+		const auto existing = entry_map.find(entry_path);
+		if (existing != entry_map.end() && !existing->second.is_vpk && existing->second.pack_file_index < 0) {
+			continue;
+		}
+
+		entry_map[entry_path] = RegisteredEntry{
+			.source_path = source_path,
+			.is_vpk = false,
+			.pack_file_index = pack_file_index,
+		};
+	}
+	unzClose(zip);
+	zip_file.unref();
+
+	registered_game.pack_files.push_back(MountedPakFile{
+		.source_path = p_bsp_path,
+		.temporary_zip_path = temporary_zip_path,
+	});
+	return OK;
+}
+
+bool SourcePPResolver::unregister_bsp_pakfile(const String &p_bsp_path, const String &p_game_id, const String &p_search_path) {
+	const String normalized_game_id_string = p_game_id.strip_edges().to_lower();
+	const std::string game_id = normalized_game_id_string.is_empty() ? std::string("__bsp_pakfiles") : _to_utf8(normalized_game_id_string);
+	const std::string search_path = _normalize_search_path(p_search_path);
+	const std::string source_path = _to_utf8(p_bsp_path);
+
+	RegisteredGame *registered_game = _find_registered_game(game_id);
+	if (registered_game == nullptr) {
 		return false;
 	}
+
+	auto search_iterator = registered_game->entry_map_by_search_path.find(search_path);
+	if (search_iterator == registered_game->entry_map_by_search_path.end()) {
+		return false;
+	}
+
+	bool removed = false;
+	for (auto entry_iterator = search_iterator->second.begin(); entry_iterator != search_iterator->second.end();) {
+		const RegisteredEntry &entry = entry_iterator->second;
+		if (entry.pack_file_index >= 0 && entry.source_path == source_path) {
+			if (entry.pack_file_index < static_cast<int>(registered_game->pack_files.size())) {
+				MountedPakFile &pack_file = registered_game->pack_files[static_cast<size_t>(entry.pack_file_index)];
+				if (!pack_file.temporary_zip_path.is_empty()) {
+					DirAccess::remove_absolute(pack_file.temporary_zip_path);
+					pack_file.temporary_zip_path = String();
+				}
+			}
+			entry_iterator = search_iterator->second.erase(entry_iterator);
+			removed = true;
+		} else {
+			++entry_iterator;
+		}
+	}
+
+	if (search_iterator->second.empty()) {
+		registered_game->entry_map_by_search_path.erase(search_iterator);
+	}
+	if (registered_game->file_system == nullptr && registered_game->entry_map_by_search_path.empty()) {
+		registered_games.erase(game_id);
+		std::erase(registration_order, game_id);
+	}
+	return removed;
+}
+
+bool SourcePPResolver::unregister_game(const String &p_game_id) {
+	const std::string normalized_game_id = _to_utf8(p_game_id.strip_edges().to_lower());
+	auto iterator = registered_games.find(normalized_game_id);
+	if (iterator == registered_games.end()) {
+		return false;
+	}
+	for (MountedPakFile &pack_file : iterator->second.pack_files) {
+		if (!pack_file.temporary_zip_path.is_empty()) {
+			DirAccess::remove_absolute(pack_file.temporary_zip_path);
+			pack_file.temporary_zip_path = String();
+		}
+	}
+	registered_games.erase(iterator);
 	std::erase(registration_order, normalized_game_id);
 	return true;
 }
 
 void SourcePPResolver::clear() {
+	for (auto &[game_id, registered_game] : registered_games) {
+		for (MountedPakFile &pack_file : registered_game.pack_files) {
+			if (!pack_file.temporary_zip_path.is_empty()) {
+				DirAccess::remove_absolute(pack_file.temporary_zip_path);
+				pack_file.temporary_zip_path = String();
+			}
+		}
+	}
 	registered_games.clear();
 	registration_order.clear();
 }
@@ -239,7 +438,19 @@ bool SourcePPResolver::has_file(const String &p_file_path, const String &p_game_
 	const std::string search_path = _normalize_search_path(p_search_path);
 
 	auto game_has_file = [&](const RegisteredGame *p_registered_game) {
-		return p_registered_game != nullptr && p_registered_game->file_system != nullptr && p_registered_game->file_system->read(file_path, search_path, false).has_value();
+		if (p_registered_game == nullptr) {
+			return false;
+		}
+
+		const auto search_iterator = p_registered_game->entry_map_by_search_path.find(search_path);
+		if (search_iterator != p_registered_game->entry_map_by_search_path.end()) {
+			const auto entry_iterator = search_iterator->second.find(file_path);
+			if (entry_iterator != search_iterator->second.end() && entry_iterator->second.pack_file_index >= 0) {
+				return entry_iterator->second.pack_file_index < static_cast<int>(p_registered_game->pack_files.size()) && !p_registered_game->pack_files[static_cast<size_t>(entry_iterator->second.pack_file_index)].temporary_zip_path.is_empty();
+			}
+		}
+
+		return p_registered_game->file_system != nullptr && p_registered_game->file_system->read(file_path, search_path, false).has_value();
 	};
 
 	if (!p_game_id.is_empty()) {
@@ -259,7 +470,22 @@ PackedByteArray SourcePPResolver::read_file(const String &p_file_path, const Str
 	const std::string search_path = _normalize_search_path(p_search_path);
 
 	auto read_from_game = [&](const RegisteredGame *p_registered_game) -> PackedByteArray {
-		if (p_registered_game == nullptr || p_registered_game->file_system == nullptr) {
+		if (p_registered_game == nullptr) {
+			return PackedByteArray();
+		}
+
+		const auto search_iterator = p_registered_game->entry_map_by_search_path.find(search_path);
+		if (search_iterator != p_registered_game->entry_map_by_search_path.end()) {
+			const auto entry_iterator = search_iterator->second.find(file_path);
+			if (entry_iterator != search_iterator->second.end() && entry_iterator->second.pack_file_index >= 0 && entry_iterator->second.pack_file_index < static_cast<int>(p_registered_game->pack_files.size())) {
+				const MountedPakFile &pack_file = p_registered_game->pack_files[static_cast<size_t>(entry_iterator->second.pack_file_index)];
+				if (!pack_file.temporary_zip_path.is_empty()) {
+					return _read_zip_entry(pack_file.temporary_zip_path, file_path);
+				}
+			}
+		}
+
+		if (p_registered_game->file_system == nullptr) {
 			return PackedByteArray();
 		}
 		const auto bytes = p_registered_game->file_system->read(file_path, search_path, false);
@@ -285,6 +511,8 @@ PackedByteArray SourcePPResolver::read_file(const String &p_file_path, const Str
 void SourcePPResolver::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("register_local_game", "game_path"), &SourcePPResolver::register_local_game);
 	ClassDB::bind_method(D_METHOD("register_steam_game", "app_id", "game_id"), &SourcePPResolver::register_steam_game);
+	ClassDB::bind_method(D_METHOD("register_bsp_pakfile", "bsp_path", "game_id", "search_path"), &SourcePPResolver::register_bsp_pakfile, DEFVAL(String()), DEFVAL(String("GAME")));
+	ClassDB::bind_method(D_METHOD("unregister_bsp_pakfile", "bsp_path", "game_id", "search_path"), &SourcePPResolver::unregister_bsp_pakfile, DEFVAL(String()), DEFVAL(String("GAME")));
 	ClassDB::bind_method(D_METHOD("unregister_game", "game_id"), &SourcePPResolver::unregister_game);
 	ClassDB::bind_method(D_METHOD("clear"), &SourcePPResolver::clear);
 	ClassDB::bind_method(D_METHOD("get_registered_games"), &SourcePPResolver::get_registered_games);

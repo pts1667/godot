@@ -61,6 +61,23 @@ String _with_vmt_extension(const String &p_path) {
 	return p_path.get_extension().to_lower() == "vmt" ? p_path : p_path + ".vmt";
 }
 
+bool _source_material_bool_value(const Ref<SourcePPVMT> &p_vmt, const String &p_key) {
+	if (p_vmt.is_null() || !p_vmt->has_value(p_key)) {
+		return false;
+	}
+
+	const String value = p_vmt->get_value(p_key).strip_edges().to_lower();
+	return value == "1" || value == "true";
+}
+
+float _source_material_float_value(const Ref<SourcePPVMT> &p_vmt, const String &p_key, float p_default) {
+	if (p_vmt.is_null() || !p_vmt->has_value(p_key)) {
+		return p_default;
+	}
+
+	return p_vmt->get_value(p_key).to_float();
+}
+
 bool _compute_polygon_plane(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon, Plane &r_plane) {
 	if (p_polygon.size() < 3) {
 		return false;
@@ -294,7 +311,9 @@ SourcePPBSP::~SourcePPBSP() {
 }
 
 void SourcePPBSP::set_resolver(const Ref<SourcePPResolver> &p_resolver) {
+	_unmount_current_bsp_pakfile();
 	resolver = p_resolver;
+	_mount_current_bsp_pakfile();
 }
 
 Ref<SourcePPResolver> SourcePPBSP::get_resolver() const {
@@ -302,7 +321,9 @@ Ref<SourcePPResolver> SourcePPBSP::get_resolver() const {
 }
 
 void SourcePPBSP::set_resolver_game_id(const String &p_game_id) {
+	_unmount_current_bsp_pakfile();
 	resolver_game_id = p_game_id.strip_edges();
+	_mount_current_bsp_pakfile();
 }
 
 String SourcePPBSP::get_resolver_game_id() const {
@@ -400,6 +421,41 @@ void SourcePPBSP::_clear_temporary_backing_file() {
 	const String path_to_remove = temporary_backing_path;
 	temporary_backing_path = String();
 	DirAccess::remove_absolute(path_to_remove);
+}
+
+void SourcePPBSP::_mount_current_bsp_pakfile() {
+	if (!resolver.is_valid() || bsp == nullptr) {
+		return;
+	}
+
+	const String backing_path = temporary_backing_path.is_empty() ? source_path : temporary_backing_path;
+	if (backing_path.is_empty()) {
+		return;
+	}
+	if (mounted_bsp_pakfile_path == backing_path && mounted_bsp_pakfile_game_id == resolver_game_id) {
+		return;
+	}
+
+	const Error mount_error = resolver->register_bsp_pakfile(backing_path, resolver_game_id);
+	if (mount_error != OK) {
+		WARN_PRINT(vformat("Failed to mount BSP Pakfile lump for '%s'.", source_path));
+		return;
+	}
+
+	mounted_bsp_pakfile_path = backing_path;
+	mounted_bsp_pakfile_game_id = resolver_game_id;
+}
+
+void SourcePPBSP::_unmount_current_bsp_pakfile() {
+	if (!resolver.is_valid() || mounted_bsp_pakfile_path.is_empty()) {
+		mounted_bsp_pakfile_path = String();
+		mounted_bsp_pakfile_game_id = String();
+		return;
+	}
+
+	resolver->unregister_bsp_pakfile(mounted_bsp_pakfile_path, mounted_bsp_pakfile_game_id);
+	mounted_bsp_pakfile_path = String();
+	mounted_bsp_pakfile_game_id = String();
 }
 
 Error SourcePPBSP::_rebuild_current_halfedge_mesh() {
@@ -562,7 +618,11 @@ Ref<Image> SourcePPBSP::_create_fallback_texture_array_image() const {
 	return image;
 }
 
-Ref<Image> SourcePPBSP::_load_material_texture_array_image(int p_material_id) const {
+Ref<Image> SourcePPBSP::_load_material_texture_array_image(int p_material_id, Image::AlphaMode *r_alpha_mode) const {
+	if (r_alpha_mode != nullptr) {
+		*r_alpha_mode = Image::ALPHA_NONE;
+	}
+
 	Ref<Image> fallback_image = _create_fallback_texture_array_image();
 	if (p_material_id < 0 || p_material_id >= material_paths.size()) {
 		return fallback_image;
@@ -609,11 +669,40 @@ Ref<Image> SourcePPBSP::_load_material_texture_array_image(int p_material_id) co
 	if (image->get_width() != BSP_TEXTURE_ARRAY_SIZE || image->get_height() != BSP_TEXTURE_ARRAY_SIZE) {
 		image->resize(BSP_TEXTURE_ARRAY_SIZE, BSP_TEXTURE_ARRAY_SIZE, Image::INTERPOLATE_LANCZOS);
 	}
+	if (r_alpha_mode != nullptr) {
+		*r_alpha_mode = image->detect_alpha();
+	}
 	image->generate_mipmaps();
 	return image;
 }
 
-Ref<Material> SourcePPBSP::_create_texture_array_material() const {
+bool SourcePPBSP::_is_material_transparent(int p_material_id) const {
+	if (p_material_id < 0 || p_material_id >= material_paths.size()) {
+		return false;
+	}
+
+	const String material_path = _resolve_material_path(material_paths[p_material_id]);
+	if (!material_path.is_empty()) {
+		Ref<SourcePPVMT> vmt;
+		vmt.instantiate();
+		vmt->set_resolver(resolver);
+		vmt->set_resolver_game_id(resolver_game_id);
+		if (vmt->open(material_path) == OK) {
+			if (_source_material_bool_value(vmt, "$translucent") || _source_material_bool_value(vmt, "$additive")) {
+				return true;
+			}
+			if (_source_material_float_value(vmt, "$alpha", 1.0f) < 0.999f) {
+				return true;
+			}
+		}
+	}
+
+	Image::AlphaMode alpha_mode = Image::ALPHA_NONE;
+	_load_material_texture_array_image(p_material_id, &alpha_mode);
+	return alpha_mode == Image::ALPHA_BLEND;
+}
+
+Ref<Material> SourcePPBSP::_create_texture_array_material(bool p_transparent) const {
 	Vector<Ref<Image>> layer_images;
 	layer_images.resize(material_paths.size() + 1);
 	for (int material_id = 0; material_id < material_paths.size(); material_id++) {
@@ -628,30 +717,50 @@ Ref<Material> SourcePPBSP::_create_texture_array_material() const {
 
 	Ref<Shader> shader;
 	shader.instantiate();
-	shader->set_code(
-			"shader_type spatial;\n"
-			"render_mode cull_back;\n"
-			"uniform sampler2DArray sourcepp_base_textures : source_color, filter_linear_mipmap, repeat_enable;\n"
-			"varying float sourcepp_texture_layer;\n"
-			"void vertex() {\n"
-			"	sourcepp_texture_layer = CUSTOM0.x;\n"
-			"}\n"
-			"void fragment() {\n"
-			"	vec4 base_color = texture(sourcepp_base_textures, vec3(UV, sourcepp_texture_layer));\n"
-			"	ALBEDO = base_color.rgb;\n"
-			"	ALPHA = base_color.a;\n"
-			"}\n");
+	if (p_transparent) {
+		shader->set_code(
+				"shader_type spatial;\n"
+				"render_mode cull_back, blend_mix;\n"
+				"uniform sampler2DArray sourcepp_base_textures : source_color, filter_linear_mipmap, repeat_enable;\n"
+				"varying float sourcepp_texture_layer;\n"
+				"void vertex() {\n"
+				"	sourcepp_texture_layer = CUSTOM0.x;\n"
+				"}\n"
+				"void fragment() {\n"
+				"	vec4 base_color = texture(sourcepp_base_textures, vec3(UV, sourcepp_texture_layer));\n"
+				"	ALBEDO = base_color.rgb;\n"
+				"	ALPHA = base_color.a;\n"
+				"}\n");
+	} else {
+		shader->set_code(
+				"shader_type spatial;\n"
+				"render_mode cull_back;\n"
+				"uniform sampler2DArray sourcepp_base_textures : source_color, filter_linear_mipmap, repeat_enable;\n"
+				"varying float sourcepp_texture_layer;\n"
+				"void vertex() {\n"
+				"	sourcepp_texture_layer = CUSTOM0.x;\n"
+				"}\n"
+				"void fragment() {\n"
+				"	vec4 base_color = texture(sourcepp_base_textures, vec3(UV, sourcepp_texture_layer));\n"
+				"	ALBEDO = base_color.rgb;\n"
+				"	ALPHA = base_color.a;\n"
+				"	ALPHA_SCISSOR_THRESHOLD = 0.5;\n"
+				"}\n");
+	}
 
 	Ref<ShaderMaterial> material;
 	material.instantiate();
 	material->set_shader(shader);
 	material->set_shader_parameter("sourcepp_base_textures", texture_array);
-	material->set_meta("sourcepp_bsp_material_mode", "texture_array");
+	material->set_meta("sourcepp_bsp_material_mode", p_transparent ? "texture_array_transparent" : "texture_array_opaque");
 	material->set_meta("sourcepp_bsp_texture_layer_count", texture_array->get_layers());
+	if (p_transparent) {
+		material->set_render_priority(1);
+	}
 	return material;
 }
 
-Error SourcePPBSP::_build_atlased_surface_arrays(Array &r_arrays) const {
+Error SourcePPBSP::_build_atlased_surface_arrays(bool p_transparent, const std::vector<bool> &p_transparent_materials, Array &r_arrays) const {
 	ERR_FAIL_COND_V_MSG(halfedge_mesh.is_null(), ERR_UNCONFIGURED, "Half-edge mesh must be available before creating a render mesh.");
 
 	r_arrays.resize(Mesh::ARRAY_MAX);
@@ -691,6 +800,11 @@ Error SourcePPBSP::_build_atlased_surface_arrays(Array &r_arrays) const {
 		}
 
 		const int face_material_id = face_index < face_material_ids.size() ? face_material_ids[face_index] : -1;
+		const bool face_is_transparent = face_material_id >= 0 && static_cast<size_t>(face_material_id) < p_transparent_materials.size() && p_transparent_materials[static_cast<size_t>(face_material_id)];
+		if (face_is_transparent != p_transparent) {
+			continue;
+		}
+
 		const int texture_layer = (face_material_id >= 0 && face_material_id < material_paths.size()) ? face_material_id : fallback_texture_layer;
 		const int vertex_offset = surface_vertices.size();
 		for (int face_vertex_index = 0; face_vertex_index < face_vertex_indices.size(); face_vertex_index++) {
@@ -816,6 +930,7 @@ Error SourcePPBSP::open(const String &p_path) {
 
 	bsp = std::move(opened_bsp);
 	source_path = p_path;
+	_mount_current_bsp_pakfile();
 
 	const Error cache_error = _cache_lumps();
 	if (cache_error != OK) {
@@ -853,6 +968,7 @@ Error SourcePPBSP::open_from_buffer(const PackedByteArray &p_data, const String 
 
 	bsp = std::move(opened_bsp);
 	source_path = p_path.is_empty() ? temporary_backing_path : p_path;
+	_mount_current_bsp_pakfile();
 
 	const Error cache_error = _cache_lumps();
 	if (cache_error != OK) {
@@ -870,6 +986,7 @@ Error SourcePPBSP::open_from_buffer(const PackedByteArray &p_data, const String 
 }
 
 void SourcePPBSP::close() {
+	_unmount_current_bsp_pakfile();
 	bsp.reset();
 	source_path = String();
 	halfedge_mesh.unref();
@@ -919,15 +1036,26 @@ Node3D *SourcePPBSP::create_node() const {
 	Ref<ArrayMesh> render_mesh;
 	render_mesh.instantiate();
 
-	Array arrays;
-	const Error build_surface_error = _build_atlased_surface_arrays(arrays);
-	ERR_FAIL_COND_V(build_surface_error != OK, nullptr);
+	std::vector<bool> transparent_materials;
+	transparent_materials.resize(material_paths.size(), false);
+	for (int material_id = 0; material_id < material_paths.size(); material_id++) {
+		transparent_materials[static_cast<size_t>(material_id)] = _is_material_transparent(material_id);
+	}
 
-	const PackedVector3Array surface_vertices = arrays[Mesh::ARRAY_VERTEX];
-	if (!surface_vertices.is_empty()) {
-		const BitField<Mesh::ArrayFormat> surface_flags = static_cast<uint64_t>(Mesh::ARRAY_CUSTOM_R_FLOAT) << Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT;
+	const BitField<Mesh::ArrayFormat> surface_flags = static_cast<uint64_t>(Mesh::ARRAY_CUSTOM_R_FLOAT) << Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT;
+	for (int surface_type = 0; surface_type < 2; surface_type++) {
+		const bool transparent_surface = surface_type == 1;
+		Array arrays;
+		const Error build_surface_error = _build_atlased_surface_arrays(transparent_surface, transparent_materials, arrays);
+		ERR_FAIL_COND_V(build_surface_error != OK, nullptr);
+
+		const PackedVector3Array surface_vertices = arrays[Mesh::ARRAY_VERTEX];
+		if (surface_vertices.is_empty()) {
+			continue;
+		}
+
 		render_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, TypedArray<Array>(), Dictionary(), surface_flags);
-		render_mesh->surface_set_material(0, _create_texture_array_material());
+		render_mesh->surface_set_material(render_mesh->get_surface_count() - 1, _create_texture_array_material(transparent_surface));
 	}
 
 	Node3D *root_node = memnew(Node3D);

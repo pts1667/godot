@@ -23,9 +23,11 @@
 			<description>
 				Creates a 3D node hierarchy from the current [member halfedge_mesh] and [member face_material_ids].
 				The returned root node stores BSP metadata and contains a [MeshInstance3D] child named [code]WorldGeometry[/code].
-				World geometry is emitted as one Godot mesh surface using a generated shader material.
-				The shader samples a [Texture2DArray], while each vertex stores the BSP material layer in a custom mesh attribute.
+				World geometry is emitted as separate opaque and transparent Godot mesh surfaces using generated shader materials.
+				Each shader samples a [Texture2DArray], while each vertex stores the BSP material layer in a custom mesh attribute.
+				Opaque materials use alpha scissor for cutout texture pixels; blended materials are kept in the transparent surface.
 				When a [member resolver] is assigned, referenced VMT and VTF files are loaded while creating the node.
+				The BSP's embedded Pakfile lump is mounted into the resolver while the BSP is open, allowing map-packed materials and textures to resolve before external game content.
 				Missing materials use a generated checker texture layer.
 			</description>
 		</method>
