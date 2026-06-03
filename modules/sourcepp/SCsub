@@ -131,6 +131,9 @@ env.modules_sources += thirdparty_obj
 
 module_obj = []
 env_sourcepp.add_source_files(module_obj, "*.cpp")
+env_sourcepp.add_source_files(module_obj, "bsp/*.cpp")
+env_sourcepp.add_source_files(module_obj, "entities/*.cpp")
+env_sourcepp.add_source_files(module_obj, "utils/*.cpp")
 env.modules_sources += module_obj
 
 env.Depends(module_obj, thirdparty_obj)

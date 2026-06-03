@@ -12,6 +12,7 @@
 #include "sourcepp_import_cache.h"
 #include "sourcepp_resolver.h"
 #include "sourcepp_vmt.h"
+#include "utils/sourcepp_utils.h"
 
 #include "core/error/error_macros.h"
 #include "core/math/transform_3d.h"
@@ -34,40 +35,10 @@
 
 namespace {
 
-constexpr float SOURCE_UNIT_TO_METERS = 0.0254f;
 constexpr float SOURCE_IMPORT_ROTATION_X = -1.5707963267948966f;
 
-Vector3 _to_vector3(const sourcepp::math::Vec3f &p_vector) {
-	return Vector3(p_vector[0], p_vector[1], p_vector[2]);
-}
-
-Quaternion _sanitize_quaternion(const Quaternion &p_quaternion) {
-	if (!p_quaternion.is_finite()) {
-		return Quaternion();
-	}
-	const real_t length_squared = p_quaternion.length_squared();
-	if (Math::is_zero_approx(length_squared)) {
-		return Quaternion();
-	}
-	return p_quaternion.is_normalized() ? p_quaternion : p_quaternion.normalized();
-}
-
-Quaternion _to_quaternion(const sourcepp::math::Quat &p_quaternion) {
-	return _sanitize_quaternion(Quaternion(p_quaternion[0], p_quaternion[1], p_quaternion[2], p_quaternion[3]));
-}
-
 Transform3D _to_bone_rest(const mdlpp::MDL::Bone &p_bone) {
-	return Transform3D(Basis(_to_quaternion(p_bone.rotationQuat)), _to_vector3(p_bone.position));
-}
-
-bool _path_exists_with_resolver(const String &p_path, const Ref<SourcePPResolver> &p_resolver, const String &p_game_id) {
-	if (FileAccess::exists(p_path)) {
-		return true;
-	}
-	if (!p_resolver.is_valid()) {
-		return false;
-	}
-	return p_game_id.is_empty() ? p_resolver->has_file(p_path) : p_resolver->has_file(p_path, p_game_id);
+	return Transform3D(Basis(SourcePPUtils::source_quaternion_to_quaternion(p_bone.rotationQuat)), SourcePPUtils::source_vector_to_vector3(p_bone.position));
 }
 
 Vector<uint8_t> _packed_to_vector(const PackedByteArray &p_bytes) {
@@ -88,35 +59,27 @@ String _resolve_anim_block_path(const String &p_model_path, const mdlpp::MDL::MD
 	if (anim_block_name.is_empty()) {
 		return String();
 	}
-	if (_path_exists_with_resolver(anim_block_name, p_resolver, p_game_id)) {
+	if (SourcePPUtils::path_exists_with_resolver(anim_block_name, p_resolver, p_game_id)) {
 		return anim_block_name;
 	}
 
 	const String model_dir = p_model_path.get_base_dir();
 	const String local_candidate = model_dir.path_join(anim_block_name.get_file());
-	if (_path_exists_with_resolver(local_candidate, p_resolver, p_game_id)) {
+	if (SourcePPUtils::path_exists_with_resolver(local_candidate, p_resolver, p_game_id)) {
 		return local_candidate;
 	}
 
 	const String relative_candidate = model_dir.path_join(anim_block_name);
-	if (_path_exists_with_resolver(relative_candidate, p_resolver, p_game_id)) {
+	if (SourcePPUtils::path_exists_with_resolver(relative_candidate, p_resolver, p_game_id)) {
 		return relative_candidate;
 	}
 
 	const String fallback_candidate = p_model_path.get_basename() + ".ani";
-	if (_path_exists_with_resolver(fallback_candidate, p_resolver, p_game_id)) {
+	if (SourcePPUtils::path_exists_with_resolver(fallback_candidate, p_resolver, p_game_id)) {
 		return fallback_candidate;
 	}
 
 	return String();
-}
-
-Transform3D _to_transform_3d(const sourcepp::math::Mat3x4f &p_matrix) {
-	return Transform3D(
-			p_matrix[0][0], p_matrix[0][1], p_matrix[0][2],
-			p_matrix[1][0], p_matrix[1][1], p_matrix[1][2],
-			p_matrix[2][0], p_matrix[2][1], p_matrix[2][2],
-			p_matrix[0][3], p_matrix[1][3], p_matrix[2][3]);
 }
 
 String _get_bone_track_name(const mdlpp::StudioModel *p_model, int p_bone) {
@@ -182,14 +145,6 @@ NodePath _make_bone_track_path(const NodePath &p_skeleton_path, const String &p_
 	return NodePath(skeleton_path + ":" + p_bone_name);
 }
 
-String _normalize_source_path(const String &p_path) {
-	return p_path.replace("\\", "/").strip_edges();
-}
-
-String _ensure_extension(const String &p_path, const String &p_extension) {
-	return p_path.to_lower().ends_with(p_extension) ? p_path : p_path + p_extension;
-}
-
 String _strip_prefix(const String &p_value, const String &p_prefix) {
 	return p_value.begins_with(p_prefix) ? p_value.substr(p_prefix.length()) : p_value;
 }
@@ -199,7 +154,7 @@ String _strip_material_extension(const String &p_value) {
 }
 
 void _append_unique_candidate(Vector<String> &r_candidates, const String &p_candidate) {
-	const String normalized = _normalize_source_path(p_candidate);
+	const String normalized = SourcePPUtils::normalize_source_path(p_candidate);
 	if (normalized.is_empty()) {
 		return;
 	}
@@ -385,14 +340,14 @@ Vector<CollisionBodySpec> _build_generated_collision_boxes(const mdlpp::StudioMo
 		const int dominant_bone = _get_dominant_bone(vertex, bone_count);
 		if (dominant_bone < 0 || dominant_bone >= bone_count) {
 			if (!_has_nonzero_bone_weights(vertex)) {
-				unweighted_bounds.expand_to(_to_vector3(vertex.position));
+				unweighted_bounds.expand_to(SourcePPUtils::source_vector_to_vector3(vertex.position));
 			}
 			continue;
 		}
 		if (collision_bone_mask[dominant_bone] == 0) {
 			continue;
 		}
-		const Vector3 model_position = _to_vector3(vertex.position);
+		const Vector3 model_position = SourcePPUtils::source_vector_to_vector3(vertex.position);
 		const Vector3 local_position = inverse_global_rests[dominant_bone].xform(model_position);
 		bounds.write[dominant_bone].expand_to(local_position);
 	}
@@ -540,7 +495,7 @@ String SourcePPMDL::_resolve_companion_path(const String &p_model_path, const Pa
 	const String base = p_model_path.get_basename();
 	for (const String &suffix : p_candidates) {
 		const String candidate = base + suffix;
-		if (_path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
+		if (SourcePPUtils::path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
 			return candidate;
 		}
 	}
@@ -550,7 +505,7 @@ String SourcePPMDL::_resolve_companion_path(const String &p_model_path, const Pa
 String SourcePPMDL::_resolve_material_path(const String &p_material_name) const {
 	ERR_FAIL_COND_V_MSG(get_model() == nullptr, String(), "SourcePPMDL must be opened before use.");
 
-	const String normalized_material = _normalize_source_path(p_material_name);
+	const String normalized_material = SourcePPUtils::normalize_source_path(p_material_name);
 	if (normalized_material.is_empty()) {
 		return String();
 	}
@@ -558,11 +513,11 @@ String SourcePPMDL::_resolve_material_path(const String &p_material_name) const 
 	const String material_without_prefix = _strip_prefix(normalized_material, "materials/");
 	const String material_base = _strip_material_extension(material_without_prefix);
 	Vector<String> candidates;
-	_append_unique_candidate(candidates, _ensure_extension(material_without_prefix, ".vmt"));
-	_append_unique_candidate(candidates, "materials/" + _ensure_extension(material_without_prefix, ".vmt"));
+	_append_unique_candidate(candidates, SourcePPUtils::ensure_extension(material_without_prefix, "vmt"));
+	_append_unique_candidate(candidates, "materials/" + SourcePPUtils::ensure_extension(material_without_prefix, "vmt"));
 
 	for (const std::string &directory_raw : get_model()->mdl.materialDirectories) {
-		String directory = _normalize_source_path(_from_utf8(directory_raw));
+		String directory = SourcePPUtils::normalize_source_path(_from_utf8(directory_raw));
 		if (directory.ends_with("/")) {
 			directory = directory.substr(0, directory.length() - 1);
 		}
@@ -570,22 +525,22 @@ String SourcePPMDL::_resolve_material_path(const String &p_material_name) const 
 		if (directory.is_empty()) {
 			continue;
 		}
-		_append_unique_candidate(candidates, directory.path_join(_ensure_extension(material_base, ".vmt")));
-		_append_unique_candidate(candidates, String("materials/") + directory.path_join(_ensure_extension(material_base, ".vmt")));
+		_append_unique_candidate(candidates, directory.path_join(SourcePPUtils::ensure_extension(material_base, "vmt")));
+		_append_unique_candidate(candidates, String("materials/") + directory.path_join(SourcePPUtils::ensure_extension(material_base, "vmt")));
 	}
 
-	const String normalized_mdl_path = _normalize_source_path(mdl_path);
+	const String normalized_mdl_path = SourcePPUtils::normalize_source_path(mdl_path);
 	const int models_index = normalized_mdl_path.find("/models/") >= 0 ? normalized_mdl_path.find("/models/") : (normalized_mdl_path.begins_with("models/") ? 0 : -1);
 	const String game_root = models_index > 0 ? normalized_mdl_path.substr(0, models_index) : String();
 
 	for (int candidate_index = 0; candidate_index < candidates.size(); candidate_index++) {
 		const String &candidate = candidates[candidate_index];
-		if (_path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
+		if (SourcePPUtils::path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
 			return candidate;
 		}
 		if (!game_root.is_empty()) {
 			const String absolute_candidate = game_root.path_join(candidate);
-			if (_path_exists_with_resolver(absolute_candidate, resolver, resolver_game_id)) {
+			if (SourcePPUtils::path_exists_with_resolver(absolute_candidate, resolver, resolver_game_id)) {
 				return absolute_candidate;
 			}
 		}
@@ -905,7 +860,7 @@ Array SourcePPMDL::get_attachments() const {
 		} else {
 			attachment_info["bone_name"] = String();
 		}
-		attachment_info["transform"] = _to_transform_3d(attachment.local);
+		attachment_info["transform"] = SourcePPUtils::source_matrix_to_transform_3d(attachment.local);
 		out.push_back(attachment_info);
 	}
 	return out;
@@ -946,8 +901,8 @@ Array SourcePPMDL::get_animation_descriptors() const {
 			movement_info["velocity_start"] = movement.velocityStart;
 			movement_info["velocity_end"] = movement.velocityEnd;
 			movement_info["yaw_end"] = movement.yawEnd;
-			movement_info["movement"] = _to_vector3(movement.movement);
-			movement_info["relative_position"] = _to_vector3(movement.relativePosition);
+			movement_info["movement"] = SourcePPUtils::source_vector_to_vector3(movement.movement);
+			movement_info["relative_position"] = SourcePPUtils::source_vector_to_vector3(movement.relativePosition);
 			movements.push_back(movement_info);
 		}
 		anim_desc_info["movements"] = movements;
@@ -978,14 +933,14 @@ Dictionary SourcePPMDL::get_animation_data(int p_animation_descriptor) const {
 		PackedVector3Array positions;
 		positions.resize(static_cast<int>(track.positions.size()));
 		for (int i = 0; i < positions.size(); i++) {
-			positions.set(i, _to_vector3(track.positions[static_cast<size_t>(i)]));
+			positions.set(i, SourcePPUtils::source_vector_to_vector3(track.positions[static_cast<size_t>(i)]));
 		}
 		track_info["positions"] = positions;
 
 		Array rotations;
 		rotations.resize(static_cast<int>(track.rotations.size()));
 		for (int i = 0; i < rotations.size(); i++) {
-			rotations[i] = _to_quaternion(track.rotations[static_cast<size_t>(i)]);
+			rotations[i] = SourcePPUtils::source_quaternion_to_quaternion(track.rotations[static_cast<size_t>(i)]);
 		}
 		track_info["rotations"] = rotations;
 		tracks.push_back(track_info);
@@ -1027,8 +982,8 @@ Array SourcePPMDL::get_sequence_descriptors() const {
 		sequence_desc_info["activity"] = sequence_desc.activity;
 		sequence_desc_info["activity_weight"] = sequence_desc.activityWeight;
 		sequence_desc_info["event_count"] = sequence_desc.eventCount;
-		sequence_desc_info["bounding_box_min"] = _to_vector3(sequence_desc.boundingBoxMin);
-		sequence_desc_info["bounding_box_max"] = _to_vector3(sequence_desc.boundingBoxMax);
+		sequence_desc_info["bounding_box_min"] = SourcePPUtils::source_vector_to_vector3(sequence_desc.boundingBoxMin);
+		sequence_desc_info["bounding_box_max"] = SourcePPUtils::source_vector_to_vector3(sequence_desc.boundingBoxMax);
 		sequence_desc_info["blend_count"] = sequence_desc.blendCount;
 		sequence_desc_info["group_size"] = Vector2i(sequence_desc.groupSize[0], sequence_desc.groupSize[1]);
 
@@ -1162,8 +1117,8 @@ Ref<Animation> SourcePPMDL::create_sequence_animation(int p_sequence_descriptor,
 
 		for (int frame = 0; frame < sampled_animation.frameCount; frame++) {
 			const double time = sampled_animation.fps > 0.0f ? static_cast<double>(frame) / static_cast<double>(sampled_animation.fps) : 0.0;
-			animation->position_track_insert_key(position_track, time, _to_vector3(track.positions[static_cast<size_t>(frame)]));
-			animation->rotation_track_insert_key(rotation_track, time, _to_quaternion(track.rotations[static_cast<size_t>(frame)]));
+			animation->position_track_insert_key(position_track, time, SourcePPUtils::source_vector_to_vector3(track.positions[static_cast<size_t>(frame)]));
+			animation->rotation_track_insert_key(rotation_track, time, SourcePPUtils::source_quaternion_to_quaternion(track.rotations[static_cast<size_t>(frame)]));
 		}
 	}
 
@@ -1387,7 +1342,7 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 	Node3D *root = memnew(Node3D);
 	root->set_name(_build_scene_name(get_name(), mdl_path));
 	root->set_rotation(Vector3(SOURCE_IMPORT_ROTATION_X, 0.0f, 0.0f));
-	root->set_scale(Vector3(SOURCE_UNIT_TO_METERS, SOURCE_UNIT_TO_METERS, SOURCE_UNIT_TO_METERS));
+	root->set_scale(Vector3(SourcePPUtils::SOURCE_UNIT_TO_METERS, SourcePPUtils::SOURCE_UNIT_TO_METERS, SourcePPUtils::SOURCE_UNIT_TO_METERS));
 
 	const int lod_count = MAX(get_lod_count(), 1);
 	float visibility_step = 20.0f;
@@ -1488,7 +1443,7 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 			attachment_node->set_name(attachment_name.validate_node_name());
 			attachment_node->set_bone_idx(attachment.bone);
 			attachment_node->set_bone_name(_get_bone_track_name(get_model(), attachment.bone));
-			attachment_node->set_transform(_to_transform_3d(attachment.local));
+			attachment_node->set_transform(SourcePPUtils::source_matrix_to_transform_3d(attachment.local));
 			skeleton->add_child(attachment_node);
 		}
 	}

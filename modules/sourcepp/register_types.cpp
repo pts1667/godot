@@ -33,7 +33,7 @@
 #include "core/object/class_db.h"
 #include "source_anim_player.h"
 #include "sourcepp_bsp.h"
-#include "sourcepp_bsp_entity.h"
+#include "entities/sourcepp_bsp_entity.h"
 #include "sourcepp_bsp_shape.h"
 #include "sourcepp_mdl.h"
 #include "sourcepp_resolver.h"

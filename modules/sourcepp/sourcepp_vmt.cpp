@@ -11,6 +11,7 @@
 #include "sourcepp_import_cache.h"
 #include "sourcepp_resolver.h"
 #include "sourcepp_vtf.h"
+#include "utils/sourcepp_utils.h"
 
 #include "core/error/error_macros.h"
 #include "core/io/file_access.h"
@@ -84,18 +85,6 @@ Variant _element_to_variant(const VMTElement &p_element) {
 	}
 
 	return _string_from_utf8(p_element.getValue());
-}
-
-String _normalize_texture_path(const String &p_path) {
-	return p_path.replace("\\", "/").strip_edges();
-}
-
-String _ensure_vtf_extension(const String &p_path) {
-	return p_path.get_extension().to_lower() == "vtf" ? p_path : p_path + ".vtf";
-}
-
-String _ensure_vmt_extension(const String &p_path) {
-	return p_path.get_extension().to_lower() == "vmt" ? p_path : p_path + ".vmt";
 }
 
 bool _is_patch_material(const VMTElement *p_root) {
@@ -221,7 +210,7 @@ std::vector<std::byte> SourcePPVMT::_to_byte_vector(const PackedByteArray &p_dat
 }
 
 String SourcePPVMT::_get_texture_path_for_key(const String &p_key) const {
-	return _normalize_texture_path(get_value(p_key));
+	return SourcePPUtils::normalize_source_path(get_value(p_key));
 }
 
 bool SourcePPVMT::_has_file(const String &p_path) const {
@@ -262,19 +251,19 @@ PackedByteArray SourcePPVMT::_read_file_bytes(const String &p_path, Error *r_err
 }
 
 String SourcePPVMT::_resolve_material_asset_path(const String &p_material_path) const {
-	const String normalized_path = _normalize_texture_path(p_material_path);
+	const String normalized_path = SourcePPUtils::normalize_source_path(p_material_path);
 	if (normalized_path.is_empty()) {
 		return String();
 	}
 
 	PackedStringArray candidates;
 	candidates.push_back(normalized_path);
-	candidates.push_back(_ensure_vmt_extension(normalized_path));
+	candidates.push_back(SourcePPUtils::ensure_extension(normalized_path, "vmt"));
 
 	if (!normalized_path.begins_with("materials/")) {
 		const String materials_path = "materials/" + normalized_path;
 		candidates.push_back(materials_path);
-		candidates.push_back(_ensure_vmt_extension(materials_path));
+		candidates.push_back(SourcePPUtils::ensure_extension(materials_path, "vmt"));
 	}
 
 	if (!source_path.is_empty()) {
@@ -282,7 +271,7 @@ String SourcePPVMT::_resolve_material_asset_path(const String &p_material_path) 
 		const int materials_index = normalized_source_path.find("materials/");
 		if (materials_index >= 0) {
 			const String source_root = normalized_source_path.substr(0, materials_index);
-			candidates.push_back(source_root + _ensure_vmt_extension(normalized_path.begins_with("materials/") ? normalized_path : String("materials/") + normalized_path));
+			candidates.push_back(source_root + SourcePPUtils::ensure_extension(normalized_path.begins_with("materials/") ? normalized_path : String("materials/") + normalized_path, "vmt"));
 		}
 	}
 
@@ -308,7 +297,7 @@ Error SourcePPVMT::_load_patch_include() {
 		return OK;
 	}
 
-	const String include_path = _normalize_texture_path(_from_utf8(include_element.getValue()));
+	const String include_path = SourcePPUtils::normalize_source_path(_from_utf8(include_element.getValue()));
 	const String resolved_include_path = _resolve_material_asset_path(include_path);
 	if (resolved_include_path.is_empty() || (!source_path.is_empty() && resolved_include_path == source_path)) {
 		return OK;
@@ -356,19 +345,19 @@ bool SourcePPVMT::_get_patch_value_for_key(const String &p_key, String *r_value)
 }
 
 String SourcePPVMT::_resolve_texture_asset_path(const String &p_texture_path) const {
-	const String normalized_path = _normalize_texture_path(p_texture_path);
+	const String normalized_path = SourcePPUtils::normalize_source_path(p_texture_path);
 	if (normalized_path.is_empty()) {
 		return String();
 	}
 
 	PackedStringArray candidates;
 	candidates.push_back(normalized_path);
-	candidates.push_back(_ensure_vtf_extension(normalized_path));
+	candidates.push_back(SourcePPUtils::ensure_extension(normalized_path, "vtf"));
 
 	if (!normalized_path.begins_with("materials/")) {
 		const String materials_path = "materials/" + normalized_path;
 		candidates.push_back(materials_path);
-		candidates.push_back(_ensure_vtf_extension(materials_path));
+		candidates.push_back(SourcePPUtils::ensure_extension(materials_path, "vtf"));
 	}
 
 	if (!source_path.is_empty()) {
@@ -376,11 +365,11 @@ String SourcePPVMT::_resolve_texture_asset_path(const String &p_texture_path) co
 		const int materials_index = normalized_source_path.find("materials/");
 		if (materials_index >= 0) {
 			const String source_root = normalized_source_path.substr(0, materials_index);
-			const String materials_base = source_root + _ensure_vtf_extension(normalized_path.begins_with("materials/") ? normalized_path : String("materials/") + normalized_path);
+			const String materials_base = source_root + SourcePPUtils::ensure_extension(normalized_path.begins_with("materials/") ? normalized_path : String("materials/") + normalized_path, "vtf");
 			candidates.push_back(materials_base);
 		}
 
-		const String sibling_candidate = source_path.get_base_dir().path_join(_ensure_vtf_extension(normalized_path.get_file()));
+		const String sibling_candidate = source_path.get_base_dir().path_join(SourcePPUtils::ensure_extension(normalized_path.get_file(), "vtf"));
 		candidates.push_back(sibling_candidate);
 	}
 

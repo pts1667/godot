@@ -8,35 +8,35 @@
 
 #include "sourcepp_bsp.h"
 
-#include "sourcepp_bsp_entity.h"
+#include "entities/sourcepp_bsp_entity.h"
+#include "entities/sourcepp_bsp_entity_utils.h"
+#include "bsp/sourcepp_bsp_geometry.h"
+#include "bsp/sourcepp_bsp_lump_utils.h"
 #include "sourcepp_bsp_shape.h"
 #include "sourcepp_import_cache.h"
 #include "sourcepp_mdl.h"
 #include "sourcepp_resolver.h"
 #include "sourcepp_vmt.h"
 #include "sourcepp_vtf.h"
+#include "utils/sourcepp_utils.h"
 
 #include "modules/halfedge/halfedge_mesh.h"
 
 #include "core/io/dir_access.h"
 #include "core/error/error_macros.h"
 #include "core/io/file_access.h"
-#include "core/math/geometry_2d.h"
 #include "core/math/math_funcs.h"
 #include "core/object/class_db.h"
 #include "core/templates/hash_map.h"
 
 #include "scene/3d/mesh_instance_3d.h"
-#include "scene/3d/light_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/3d/physics/collision_object_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
-#include "scene/3d/physics/rigid_body_3d.h"
 #include "scene/3d/physics/static_body_3d.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
-#include "scene/resources/3d/box_shape_3d.h"
 #include "scene/resources/shader.h"
 
 #include <cstddef>
@@ -46,22 +46,14 @@
 
 namespace {
 
-constexpr float SOURCE_UNIT_TO_METERS = 0.0254f;
-constexpr float BSP_HALFEDGE_COPLANAR_EPSILON = 0.001f;
 constexpr float BSP_HALFEDGE_COLLINEAR_EPSILON = 0.0001f;
 constexpr int BSP_TEXTURE_ARRAY_SIZE = 512;
 constexpr size_t STATIC_PROP_NAME_LENGTH = 128;
-constexpr size_t STATIC_PROP_V4_SIZE = 56;
-constexpr size_t STATIC_PROP_V5_SIZE = 60;
-constexpr size_t STATIC_PROP_V6_SIZE = 64;
-constexpr size_t STATIC_PROP_V7_SIZE = 72;
 constexpr size_t BSP_DISPINFO_SIZE = 176;
 constexpr size_t BSP_DISPVERT_SIZE = 20;
 constexpr size_t BSP_DISPTRI_SIZE = 2;
 constexpr int BSP_MIN_DISPLACEMENT_POWER = 2;
 constexpr int BSP_MAX_DISPLACEMENT_POWER = 4;
-
-Basis _source_angles_to_godot_basis(const Vector3 &p_source_angles);
 
 enum BSPRenderSurfaceType {
 	BSP_RENDER_SURFACE_OPAQUE = 0,
@@ -69,36 +61,6 @@ enum BSPRenderSurfaceType {
 	BSP_RENDER_SURFACE_WATER = 2,
 	BSP_RENDER_SURFACE_COUNT = 3,
 };
-
-bool _path_exists_with_resolver(const String &p_path, const Ref<SourcePPResolver> &p_resolver, const String &p_game_id) {
-	if (FileAccess::exists(p_path)) {
-		return true;
-	}
-	if (!p_resolver.is_valid()) {
-		return false;
-	}
-	return p_game_id.is_empty() ? p_resolver->has_file(p_path) : p_resolver->has_file(p_path, p_game_id);
-}
-
-String _normalize_source_path(const String &p_path) {
-	return p_path.replace("\\", "/").strip_edges();
-}
-
-String _strip_material_prefix(const String &p_path) {
-	return p_path.begins_with("materials/") ? p_path.substr(10) : p_path;
-}
-
-String _with_vmt_extension(const String &p_path) {
-	return p_path.get_extension().to_lower() == "vmt" ? p_path : p_path + ".vmt";
-}
-
-String _with_vtf_extension(const String &p_path) {
-	return p_path.get_extension().to_lower() == "vtf" ? p_path : p_path + ".vtf";
-}
-
-String _with_mdl_extension(const String &p_path) {
-	return p_path.get_extension().to_lower() == "mdl" ? p_path : p_path + ".mdl";
-}
 
 String _alpha_mode_to_string(Image::AlphaMode p_alpha_mode) {
 	switch (p_alpha_mode) {
@@ -144,157 +106,6 @@ bool _dict_bool(const Dictionary &p_dict, const StringName &p_key, bool p_defaul
 	return value_string == "1" || value_string == "true" || value_string == "yes";
 }
 
-Vector3 _source_to_godot_direction(const Vector3 &p_direction) {
-	return Vector3(p_direction.x, p_direction.z, -p_direction.y);
-}
-
-Vector3 _parse_source_vector_string(const String &p_value) {
-	const PackedStringArray components = p_value.strip_edges().split(" ", false);
-	if (components.size() < 3) {
-		return Vector3();
-	}
-	return Vector3(components[0].to_float(), components[1].to_float(), components[2].to_float());
-}
-
-Color _parse_source_color_string(const String &p_value, const Color &p_default = Color(1, 1, 1)) {
-	const PackedStringArray components = p_value.strip_edges().replace(",", " ").split(" ", false);
-	if (components.size() < 3) {
-		return p_default;
-	}
-
-	return Color(
-			CLAMP(components[0].to_float() / 255.0f, 0.0f, 1.0f),
-			CLAMP(components[1].to_float() / 255.0f, 0.0f, 1.0f),
-			CLAMP(components[2].to_float() / 255.0f, 0.0f, 1.0f),
-			components.size() > 3 ? CLAMP(components[3].to_float() / 255.0f, 0.0f, 1.0f) : 1.0f);
-}
-
-void _parse_source_light_value(const Dictionary &p_keyvalues, Color &r_color, float &r_energy) {
-	const String light_value = _dict_string(p_keyvalues, "_light").strip_edges().replace(",", " ");
-	const PackedStringArray components = light_value.split(" ", false);
-	if (components.size() >= 3) {
-		r_color = Color(
-				CLAMP(components[0].to_float() / 255.0f, 0.0f, 1.0f),
-				CLAMP(components[1].to_float() / 255.0f, 0.0f, 1.0f),
-				CLAMP(components[2].to_float() / 255.0f, 0.0f, 1.0f));
-	}
-	if (components.size() >= 4) {
-		r_energy = MAX(components[3].to_float() / 255.0f, 0.0f);
-	}
-	if (components.size() < 3 && p_keyvalues.has("rendercolor")) {
-		r_color = _parse_source_color_string(_dict_string(p_keyvalues, "rendercolor"), r_color);
-	}
-	if (p_keyvalues.has("renderamt")) {
-		r_energy *= MAX(_dict_float(p_keyvalues, "renderamt", 255.0) / 255.0, 0.0);
-	}
-}
-
-float _source_light_range_from_keyvalues(const Dictionary &p_keyvalues, float p_default_source_units) {
-	if (p_keyvalues.has("_distance")) {
-		return MAX(_dict_float(p_keyvalues, "_distance", p_default_source_units), 1.0) * SOURCE_UNIT_TO_METERS;
-	}
-	if (p_keyvalues.has("distance")) {
-		return MAX(_dict_float(p_keyvalues, "distance", p_default_source_units), 1.0) * SOURCE_UNIT_TO_METERS;
-	}
-	return p_default_source_units * SOURCE_UNIT_TO_METERS;
-}
-
-void _apply_source_light_direction(Node3D *p_node, const Dictionary &p_keyvalues) {
-	ERR_FAIL_NULL(p_node);
-	if (!p_keyvalues.has("pitch")) {
-		return;
-	}
-
-	Vector3 source_angles = _parse_source_vector_string(_dict_string(p_keyvalues, "angles", "0 0 0"));
-	source_angles.x = _dict_float(p_keyvalues, "pitch", source_angles.x);
-	p_node->set_basis(_source_angles_to_godot_basis(source_angles));
-	p_node->set_meta("sourcepp_light_direction_source_angles", source_angles);
-}
-
-bool _can_read_bytes(const std::vector<std::byte> &p_bytes, size_t p_offset, size_t p_size) {
-	return p_offset <= p_bytes.size() && p_size <= p_bytes.size() - p_offset;
-}
-
-uint8_t _read_u8(const std::vector<std::byte> &p_bytes, size_t p_offset) {
-	return std::to_integer<uint8_t>(p_bytes[p_offset]);
-}
-
-uint16_t _read_u16_le(const std::vector<std::byte> &p_bytes, size_t p_offset) {
-	return static_cast<uint16_t>(_read_u8(p_bytes, p_offset) | (static_cast<uint16_t>(_read_u8(p_bytes, p_offset + 1)) << 8));
-}
-
-uint32_t _read_u32_le(const std::vector<std::byte> &p_bytes, size_t p_offset) {
-	return static_cast<uint32_t>(_read_u8(p_bytes, p_offset)) |
-			(static_cast<uint32_t>(_read_u8(p_bytes, p_offset + 1)) << 8) |
-			(static_cast<uint32_t>(_read_u8(p_bytes, p_offset + 2)) << 16) |
-			(static_cast<uint32_t>(_read_u8(p_bytes, p_offset + 3)) << 24);
-}
-
-int32_t _read_i32_le(const std::vector<std::byte> &p_bytes, size_t p_offset) {
-	return static_cast<int32_t>(_read_u32_le(p_bytes, p_offset));
-}
-
-float _read_f32_le(const std::vector<std::byte> &p_bytes, size_t p_offset) {
-	const uint32_t packed = _read_u32_le(p_bytes, p_offset);
-	float value = 0.0f;
-	static_assert(sizeof(value) == sizeof(packed));
-	memcpy(&value, &packed, sizeof(value));
-	return value;
-}
-
-Vector3 _read_source_vector3_le(const std::vector<std::byte> &p_bytes, size_t p_offset) {
-	return Vector3(_read_f32_le(p_bytes, p_offset), _read_f32_le(p_bytes, p_offset + 4), _read_f32_le(p_bytes, p_offset + 8));
-}
-
-String _read_fixed_utf8_string(const std::vector<std::byte> &p_bytes, size_t p_offset, size_t p_length) {
-	size_t end_offset = p_offset;
-	const size_t max_offset = p_offset + p_length;
-	while (end_offset < max_offset && std::to_integer<uint8_t>(p_bytes[end_offset]) != 0) {
-		end_offset++;
-	}
-	return String::utf8(reinterpret_cast<const char *>(p_bytes.data()) + p_offset, static_cast<int>(end_offset - p_offset));
-}
-
-size_t _static_prop_record_size(int p_version) {
-	if (p_version == 4) {
-		return STATIC_PROP_V4_SIZE;
-	}
-	if (p_version == 5) {
-		return STATIC_PROP_V5_SIZE;
-	}
-	if (p_version == 6) {
-		return STATIC_PROP_V6_SIZE;
-	}
-	if (p_version >= 7) {
-		return STATIC_PROP_V7_SIZE;
-	}
-	return 0;
-}
-
-int _disp_power_vertex_count(int p_power) {
-	const int side = (1 << p_power) + 1;
-	return side * side;
-}
-
-int _disp_power_triangle_count(int p_power) {
-	const int side_quads = 1 << p_power;
-	return side_quads * side_quads * 2;
-}
-
-Basis _source_angles_to_godot_basis(const Vector3 &p_source_angles) {
-	const real_t sy = Math::sin(Math::deg_to_rad(p_source_angles.y));
-	const real_t cy = Math::cos(Math::deg_to_rad(p_source_angles.y));
-	const real_t sp = Math::sin(Math::deg_to_rad(p_source_angles.x));
-	const real_t cp = Math::cos(Math::deg_to_rad(p_source_angles.x));
-	const real_t sr = Math::sin(Math::deg_to_rad(p_source_angles.z));
-	const real_t cr = Math::cos(Math::deg_to_rad(p_source_angles.z));
-
-	const Vector3 source_x_axis(cp * cy, cp * sy, -sp);
-	const Vector3 source_y_axis(sp * sr * cy - cr * sy, sp * sr * sy + cr * cy, sr * cp);
-	const Vector3 source_z_axis(sp * cr * cy + sr * sy, sp * cr * sy - sr * cy, cr * cp);
-	return Basis(_source_to_godot_direction(source_x_axis), _source_to_godot_direction(source_y_axis), _source_to_godot_direction(source_z_axis)).orthonormalized();
-}
-
 bool _source_material_bool_value(const Ref<SourcePPVMT> &p_vmt, const String &p_key) {
 	if (p_vmt.is_null() || !p_vmt->has_value(p_key)) {
 		return false;
@@ -310,563 +121,6 @@ float _source_material_float_value(const Ref<SourcePPVMT> &p_vmt, const String &
 	}
 
 	return p_vmt->get_value(p_key).to_float();
-}
-
-bool _compute_polygon_plane(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon, Plane &r_plane) {
-	if (p_polygon.size() < 3) {
-		return false;
-	}
-
-	const int origin_index = p_polygon[0];
-	for (int i = 1; i < p_polygon.size() - 1; i++) {
-		const Vector3 &a = p_vertices[origin_index];
-		const Vector3 &b = p_vertices[p_polygon[i]];
-		const Vector3 &c = p_vertices[p_polygon[i + 1]];
-		if ((b - a).cross(c - a).length() <= BSP_HALFEDGE_COLLINEAR_EPSILON) {
-			continue;
-		}
-		r_plane = Plane(a, b, c);
-		return true;
-	}
-
-	return false;
-}
-
-bool _simplify_bsp_polygon(const PackedVector3Array &p_vertices, PackedInt32Array &r_polygon, PackedVector2Array *r_uvs = nullptr) {
-	if (r_polygon.size() < 3) {
-		return false;
-	}
-
-	bool changed = true;
-	while (changed && r_polygon.size() >= 3) {
-		changed = false;
-		for (int i = 0; i < r_polygon.size(); i++) {
-			const int prev_index = (i - 1 + r_polygon.size()) % r_polygon.size();
-			const int next_index = (i + 1) % r_polygon.size();
-			const int prev_vertex = r_polygon[prev_index];
-			const int vertex = r_polygon[i];
-			const int next_vertex = r_polygon[next_index];
-
-			if (prev_vertex == vertex || vertex == next_vertex || prev_vertex == next_vertex) {
-				r_polygon.remove_at(i);
-				if (r_uvs != nullptr && i < r_uvs->size()) {
-					r_uvs->remove_at(i);
-				}
-				changed = true;
-				break;
-			}
-
-			const Vector3 &prev = p_vertices[prev_vertex];
-			const Vector3 &current = p_vertices[vertex];
-			const Vector3 &next = p_vertices[next_vertex];
-			if ((current - prev).cross(next - current).length() <= BSP_HALFEDGE_COLLINEAR_EPSILON) {
-				r_polygon.remove_at(i);
-				if (r_uvs != nullptr && i < r_uvs->size()) {
-					r_uvs->remove_at(i);
-				}
-				changed = true;
-				break;
-			}
-		}
-	}
-
-	if (r_polygon.size() < 3) {
-		return false;
-	}
-
-	for (int i = 0; i < r_polygon.size(); i++) {
-		for (int j = i + 1; j < r_polygon.size(); j++) {
-			if (r_polygon[i] == r_polygon[j]) {
-				return false;
-			}
-		}
-	}
-
-	return true;
-}
-
-void _reverse_bsp_polygon(PackedInt32Array &r_polygon) {
-	for (int i = 1; i < (r_polygon.size() + 1) / 2; i++) {
-		const int opposite_index = r_polygon.size() - i;
-		const int value = r_polygon[i];
-		r_polygon.set(i, r_polygon[opposite_index]);
-		r_polygon.set(opposite_index, value);
-	}
-}
-
-void _reverse_bsp_polygon_uvs(PackedVector2Array &r_uvs) {
-	for (int i = 1; i < (r_uvs.size() + 1) / 2; i++) {
-		const int opposite_index = r_uvs.size() - i;
-		const Vector2 value = r_uvs[i];
-		r_uvs.set(i, r_uvs[opposite_index]);
-		r_uvs.set(opposite_index, value);
-	}
-}
-
-bool _project_bsp_polygon(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon, PackedVector2Array &r_projected_vertices) {
-	Plane plane;
-	if (!_compute_polygon_plane(p_vertices, p_polygon, plane)) {
-		return false;
-	}
-
-	r_projected_vertices.resize(p_polygon.size());
-	const Vector3 normal = plane.normal.normalized();
-	const Vector3 reference = Math::abs(normal.dot(Vector3(0, 1, 0))) < 0.999f ? Vector3(0, 1, 0) : Vector3(1, 0, 0);
-	const Vector3 tangent = normal.cross(reference).normalized();
-	const Vector3 bitangent = normal.cross(tangent).normalized();
-
-	for (int i = 0; i < p_polygon.size(); i++) {
-		const Vector3 &vertex = p_vertices[p_polygon[i]];
-		if (Math::abs(plane.distance_to(vertex)) > BSP_HALFEDGE_COPLANAR_EPSILON) {
-			return false;
-		}
-		r_projected_vertices.set(i, Vector2(tangent.dot(vertex), bitangent.dot(vertex)));
-	}
-
-	return true;
-}
-
-PackedInt32Array _triangulate_projected_polygon_preserve_winding(const PackedVector2Array &p_projected_vertices) {
-	PackedInt32Array triangulated_indices = Geometry2D::triangulate_polygon(p_projected_vertices);
-	if (!triangulated_indices.is_empty()) {
-		return triangulated_indices;
-	}
-
-	PackedVector2Array reversed_projected_vertices;
-	reversed_projected_vertices.resize(p_projected_vertices.size());
-	for (int i = 0; i < p_projected_vertices.size(); i++) {
-		reversed_projected_vertices.set(i, p_projected_vertices[p_projected_vertices.size() - 1 - i]);
-	}
-
-	triangulated_indices = Geometry2D::triangulate_polygon(reversed_projected_vertices);
-	if (triangulated_indices.is_empty()) {
-		return triangulated_indices;
-	}
-
-	PackedInt32Array remapped_indices;
-	remapped_indices.resize(triangulated_indices.size());
-	for (int i = 0; i < triangulated_indices.size(); i += 3) {
-		if (i + 2 >= triangulated_indices.size()) {
-			break;
-		}
-
-		remapped_indices.set(i, p_projected_vertices.size() - 1 - triangulated_indices[i]);
-		remapped_indices.set(i + 1, p_projected_vertices.size() - 1 - triangulated_indices[i + 2]);
-		remapped_indices.set(i + 2, p_projected_vertices.size() - 1 - triangulated_indices[i + 1]);
-	}
-
-	return remapped_indices;
-}
-
-bool _is_halfedge_compatible_polygon(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon) {
-	PackedVector2Array projected_vertices;
-	if (!_project_bsp_polygon(p_vertices, p_polygon, projected_vertices)) {
-		return false;
-	}
-
-	return !_triangulate_projected_polygon_preserve_winding(projected_vertices).is_empty();
-}
-
-void _append_triangulated_polygon(const PackedVector3Array &p_vertices, const PackedInt32Array &p_polygon, const PackedVector2Array &p_uvs, int p_material_id, bool p_reverse_winding, Array &r_faces, PackedInt32Array &r_face_material_ids, Array &r_face_uvs) {
-	PackedVector2Array projected_vertices;
-	if (!_project_bsp_polygon(p_vertices, p_polygon, projected_vertices)) {
-		return;
-	}
-
-	const PackedInt32Array triangulated_indices = _triangulate_projected_polygon_preserve_winding(projected_vertices);
-	for (int i = 0; i < triangulated_indices.size(); i += 3) {
-		if (i + 2 >= triangulated_indices.size()) {
-			break;
-		}
-
-		PackedInt32Array triangle;
-		PackedVector2Array triangle_uvs;
-		triangle.push_back(p_polygon[triangulated_indices[i]]);
-		triangle.push_back(p_polygon[triangulated_indices[i + 1]]);
-		triangle.push_back(p_polygon[triangulated_indices[i + 2]]);
-		triangle_uvs.push_back(p_uvs[triangulated_indices[i]]);
-		triangle_uvs.push_back(p_uvs[triangulated_indices[i + 1]]);
-		triangle_uvs.push_back(p_uvs[triangulated_indices[i + 2]]);
-		if (p_reverse_winding) {
-			const int value = triangle[1];
-			triangle.set(1, triangle[2]);
-			triangle.set(2, value);
-			const Vector2 uv = triangle_uvs[1];
-			triangle_uvs.set(1, triangle_uvs[2]);
-			triangle_uvs.set(2, uv);
-		}
-
-		Plane triangle_plane;
-		if (!_compute_polygon_plane(p_vertices, triangle, triangle_plane)) {
-			continue;
-		}
-
-		r_faces.push_back(triangle);
-		r_face_material_ids.push_back(p_material_id);
-		r_face_uvs.push_back(triangle_uvs);
-	}
-}
-
-PackedVector3Array _build_collision_faces_from_mesh(const Ref<ArrayMesh> &p_mesh) {
-	PackedVector3Array faces;
-	if (p_mesh.is_null()) {
-		return faces;
-	}
-
-	for (int surface_index = 0; surface_index < p_mesh->get_surface_count(); surface_index++) {
-		if (p_mesh->surface_get_primitive_type(surface_index) != Mesh::PRIMITIVE_TRIANGLES) {
-			continue;
-		}
-
-		const Array arrays = p_mesh->surface_get_arrays(surface_index);
-		if (arrays.size() <= Mesh::ARRAY_VERTEX || arrays[Mesh::ARRAY_VERTEX].get_type() != Variant::PACKED_VECTOR3_ARRAY) {
-			continue;
-		}
-
-		const PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
-		if (arrays.size() > Mesh::ARRAY_INDEX && arrays[Mesh::ARRAY_INDEX].get_type() == Variant::PACKED_INT32_ARRAY) {
-			const PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
-			for (int i = 0; i + 2 < indices.size(); i += 3) {
-				const int a = indices[i + 0];
-				const int b = indices[i + 1];
-				const int c = indices[i + 2];
-				if (a < 0 || b < 0 || c < 0 || a >= vertices.size() || b >= vertices.size() || c >= vertices.size()) {
-					continue;
-				}
-				faces.push_back(vertices[a]);
-				faces.push_back(vertices[b]);
-				faces.push_back(vertices[c]);
-			}
-		} else {
-			for (int i = 0; i + 2 < vertices.size(); i += 3) {
-				faces.push_back(vertices[i + 0]);
-				faces.push_back(vertices[i + 1]);
-				faces.push_back(vertices[i + 2]);
-			}
-		}
-	}
-
-	return faces;
-}
-
-bool _is_source_output_key(const String &p_key) {
-	return p_key.begins_with("On") || p_key.begins_with("on");
-}
-
-Array _parse_source_outputs(const bsppp::BSPEntityKeyValues &p_entity) {
-	Array outputs;
-	for (const bsppp::BSPEntityKeyValues::Element &element : p_entity.getKeyValues()) {
-		const String key = _sourcepp_string_from_utf8(element.getKey());
-		if (!_is_source_output_key(key)) {
-			continue;
-		}
-
-		const String value = _sourcepp_string_from_utf8(element.getValue());
-		const PackedStringArray parts = value.split(",", true);
-		Dictionary output;
-		output["output"] = key;
-		output["raw"] = value;
-		output["target"] = parts.size() > 0 ? parts[0].strip_edges() : String();
-		output["input"] = parts.size() > 1 ? parts[1].strip_edges() : String();
-		output["parameter"] = parts.size() > 2 ? parts[2].strip_edges() : String();
-		output["delay"] = parts.size() > 3 ? parts[3].strip_edges().to_float() : 0.0;
-		output["max_times_to_fire"] = parts.size() > 4 ? parts[4].strip_edges().to_int() : -1;
-		outputs.push_back(output);
-	}
-	return outputs;
-}
-
-bool _is_sourcepp_trigger_class(const String &p_classname) {
-	const String classname = p_classname.to_lower();
-	return classname == "trigger_multiple" || classname == "trigger_once" || classname == "trigger_hurt";
-}
-
-bool _is_sourcepp_body_class(const String &p_classname) {
-	const String classname = p_classname.to_lower();
-	return classname == "func_brush" || classname == "func_door" || classname == "func_physbox";
-}
-
-bool _is_sourcepp_visual_only_class(const String &p_classname) {
-	const String classname = p_classname.to_lower();
-	return classname == "func_illusionary" || classname == "func_detail";
-}
-
-bool _is_sourcepp_physics_entity_class(const String &p_classname) {
-	const String classname = p_classname.to_lower();
-	return classname == "prop_physics" || classname == "prop_physics_multiplayer" || classname == "prop_ragdoll";
-}
-
-bool _is_sourcepp_static_entity_class(const String &p_classname) {
-	const String classname = p_classname.to_lower();
-	return classname == "prop_static";
-}
-
-bool _is_sourcepp_dynamic_model_entity_class(const String &p_classname) {
-	const String classname = p_classname.to_lower();
-	return classname == "prop_dynamic" || classname == "prop_dynamic_override" || classname == "dynamic_prop" || classname == "npc_combine_camera" || classname == "npc_turret_floor";
-}
-
-bool _is_source_model_path(const String &p_model) {
-	const String model = _normalize_source_path(p_model).strip_edges();
-	if (model.is_empty() || model.begins_with("*")) {
-		return false;
-	}
-	if (model.get_extension().to_lower() == "mdl") {
-		return true;
-	}
-	return model.to_lower().begins_with("models/");
-}
-
-String _normalize_source_model_path(const String &p_model) {
-	const String model = _normalize_source_path(p_model);
-	return _is_source_model_path(model) ? _with_mdl_extension(model) : String();
-}
-
-void _set_sourcepp_entity_metadata(Node3D *p_node, const String &p_classname, const String &p_targetname, int p_entity_index, int p_model_index, const Dictionary &p_keyvalues, const Array &p_outputs) {
-	ERR_FAIL_NULL(p_node);
-	p_node->set_meta("sourcepp_bsp_entity_classname", p_classname);
-	p_node->set_meta("sourcepp_bsp_entity_targetname", p_targetname);
-	p_node->set_meta("sourcepp_bsp_entity_index", p_entity_index);
-	p_node->set_meta("sourcepp_bsp_model_index", p_model_index);
-	p_node->set_meta("sourcepp_bsp_entity_keyvalues", p_keyvalues);
-	p_node->set_meta("sourcepp_bsp_entity_outputs", p_outputs);
-}
-
-void _expand_aabb_with_transformed_aabb(const AABB &p_aabb, const Transform3D &p_transform, AABB &r_aabb, bool &r_has_aabb) {
-	for (int corner_index = 0; corner_index < 8; corner_index++) {
-		const Vector3 corner = p_aabb.position + Vector3(
-				(corner_index & 1) ? p_aabb.size.x : 0.0f,
-				(corner_index & 2) ? p_aabb.size.y : 0.0f,
-				(corner_index & 4) ? p_aabb.size.z : 0.0f);
-		const Vector3 transformed_corner = p_transform.xform(corner);
-		if (!r_has_aabb) {
-			r_aabb = AABB(transformed_corner, Vector3());
-			r_has_aabb = true;
-		} else {
-			r_aabb.expand_to(transformed_corner);
-		}
-	}
-}
-
-void _accumulate_mesh_instance_aabb(Node *p_node, const Transform3D &p_parent_transform, AABB &r_aabb, bool &r_has_aabb) {
-	Node3D *node_3d = Object::cast_to<Node3D>(p_node);
-	const Transform3D node_transform = node_3d != nullptr ? p_parent_transform * node_3d->get_transform() : p_parent_transform;
-	if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
-		const Ref<Mesh> mesh = mesh_instance->get_mesh();
-		if (mesh.is_valid()) {
-			_expand_aabb_with_transformed_aabb(mesh->get_aabb(), node_transform, r_aabb, r_has_aabb);
-		}
-	}
-	for (int child_index = 0; child_index < p_node->get_child_count(); child_index++) {
-		_accumulate_mesh_instance_aabb(p_node->get_child(child_index), node_transform, r_aabb, r_has_aabb);
-	}
-}
-
-void _add_sourcepp_bounds_collision_child(CollisionObject3D *p_body, Node3D *p_model_node, const String &p_source_path, int p_entity_index, const String &p_model_path) {
-	ERR_FAIL_NULL(p_body);
-	ERR_FAIL_NULL(p_model_node);
-
-	AABB bounds;
-	bool has_bounds = false;
-	_accumulate_mesh_instance_aabb(p_model_node, Transform3D(), bounds, has_bounds);
-	if (!has_bounds || bounds.size.is_zero_approx()) {
-		return;
-	}
-
-	Ref<BoxShape3D> box_shape;
-	box_shape.instantiate();
-	box_shape->set_size(bounds.size);
-
-	CollisionShape3D *collision_shape = memnew(CollisionShape3D);
-	collision_shape->set_name("BoundsCollision");
-	collision_shape->set_shape(box_shape);
-	collision_shape->set_transform(Transform3D(Basis(), bounds.get_center()));
-	collision_shape->set_meta("sourcepp_bsp_path", p_source_path);
-	collision_shape->set_meta("sourcepp_bsp_entity_index", p_entity_index);
-	collision_shape->set_meta("sourcepp_model_path", p_model_path);
-	collision_shape->set_meta("sourcepp_collision_source", "model_bounds");
-	collision_shape->set_meta("sourcepp_collision_bounds", bounds);
-	p_body->add_child(collision_shape);
-}
-
-Node3D *_create_sourcepp_entity_node(const String &p_classname) {
-	const String classname = p_classname.to_lower();
-	if (classname == "trigger_multiple") {
-		return memnew(SourcePPTriggerMultiple3D);
-	}
-	if (classname == "trigger_once") {
-		return memnew(SourcePPTriggerOnce3D);
-	}
-	if (classname == "trigger_hurt") {
-		return memnew(SourcePPTriggerHurt3D);
-	}
-	if (classname == "func_brush") {
-		return memnew(SourcePPFuncBrush3D);
-	}
-	if (classname == "func_door") {
-		return memnew(SourcePPFuncDoor3D);
-	}
-	if (classname == "func_illusionary") {
-		return memnew(SourcePPFuncIllusionary3D);
-	}
-	if (classname == "func_useableladder") {
-		return memnew(SourcePPLadder3D);
-	}
-	if (classname == "info_ladder_dismount") {
-		return memnew(SourcePPLadderDismount3D);
-	}
-	if (_is_sourcepp_body_class(classname)) {
-		return memnew(SourcePPBrushBody3D);
-	}
-	return memnew(SourcePPBrushEntity3D);
-}
-
-Node3D *_create_sourcepp_point_entity_node(const String &p_classname) {
-	const String classname = p_classname.to_lower();
-	if (classname == "light") {
-		return memnew(OmniLight3D);
-	}
-	if (classname == "light_spot") {
-		return memnew(SpotLight3D);
-	}
-	if (classname == "light_environment" || classname == "env_sun") {
-		return memnew(DirectionalLight3D);
-	}
-	if (_is_sourcepp_physics_entity_class(p_classname)) {
-		return memnew(RigidBody3D);
-	}
-	if (_is_sourcepp_static_entity_class(p_classname)) {
-		return memnew(StaticBody3D);
-	}
-	if (_is_sourcepp_dynamic_model_entity_class(p_classname)) {
-		return memnew(AnimatableBody3D);
-	}
-	return _create_sourcepp_entity_node(p_classname);
-}
-
-void _setup_sourcepp_entity_node(Node3D *p_node, const String &p_classname, const String &p_targetname, int p_entity_index, int p_model_index, const Dictionary &p_keyvalues, const Array &p_outputs) {
-	_set_sourcepp_entity_metadata(p_node, p_classname, p_targetname, p_entity_index, p_model_index, p_keyvalues, p_outputs);
-	if (SourcePPBrushEntity3D *entity = Object::cast_to<SourcePPBrushEntity3D>(p_node)) {
-		entity->setup_sourcepp_entity(p_classname, p_targetname, p_entity_index, p_model_index, p_keyvalues, p_outputs);
-		entity->set_entity_enabled(!_dict_bool(p_keyvalues, "StartDisabled", false));
-		return;
-	}
-	if (SourcePPBrushArea3D *area = Object::cast_to<SourcePPBrushArea3D>(p_node)) {
-		area->setup_sourcepp_entity(p_classname, p_targetname, p_entity_index, p_model_index, p_keyvalues, p_outputs);
-		area->set_entity_enabled(!_dict_bool(p_keyvalues, "StartDisabled", false));
-		return;
-	}
-	if (SourcePPBrushBody3D *body = Object::cast_to<SourcePPBrushBody3D>(p_node)) {
-		body->setup_sourcepp_entity(p_classname, p_targetname, p_entity_index, p_model_index, p_keyvalues, p_outputs);
-		body->set_entity_enabled(!_dict_bool(p_keyvalues, "StartDisabled", false));
-	}
-}
-
-void _configure_sourcepp_specific_node(Node3D *p_node, const Dictionary &p_keyvalues) {
-	if (SourcePPTriggerMultiple3D *trigger_multiple = Object::cast_to<SourcePPTriggerMultiple3D>(p_node)) {
-		trigger_multiple->set_wait(_dict_float(p_keyvalues, "wait", 0.2));
-	}
-	if (SourcePPTriggerHurt3D *trigger_hurt = Object::cast_to<SourcePPTriggerHurt3D>(p_node)) {
-		trigger_hurt->set_damage(_dict_float(p_keyvalues, "damage", 10.0));
-		trigger_hurt->set_damage_cap(_dict_float(p_keyvalues, "damagecap", 20.0));
-		trigger_hurt->set_damage_type(_dict_int(p_keyvalues, "damagetype", 0));
-		trigger_hurt->set_damage_model(_dict_int(p_keyvalues, "damagemodel", 0));
-		trigger_hurt->set_no_damage_force(_dict_bool(p_keyvalues, "nodmgforce", false));
-	}
-	if (SourcePPFuncBrush3D *func_brush = Object::cast_to<SourcePPFuncBrush3D>(p_node)) {
-		func_brush->set_solidity(_dict_int(p_keyvalues, "Solidity", 0));
-		func_brush->set_solid_bsp(_dict_bool(p_keyvalues, "solidbsp", false));
-	}
-	if (SourcePPFuncDoor3D *func_door = Object::cast_to<SourcePPFuncDoor3D>(p_node)) {
-		func_door->set_move_direction(_source_angles_to_godot_basis(_parse_source_vector_string(_dict_string(p_keyvalues, "movedir", "0 0 0"))).xform(Vector3(1, 0, 0)).normalized());
-		func_door->set_speed(_dict_float(p_keyvalues, "speed", 100.0));
-		func_door->set_wait(_dict_float(p_keyvalues, "wait", 4.0));
-		func_door->set_lip(_dict_float(p_keyvalues, "lip", 0.0));
-		func_door->set_spawn_position(_dict_int(p_keyvalues, "spawnpos", 0));
-		func_door->set_locked((_dict_int(p_keyvalues, "spawnflags", 0) & 2048) != 0);
-	}
-	if (SourcePPLadder3D *ladder = Object::cast_to<SourcePPLadder3D>(p_node)) {
-		ladder->set_point0(_source_to_godot_direction(_parse_source_vector_string(_dict_string(p_keyvalues, "point0"))) * SOURCE_UNIT_TO_METERS);
-		ladder->set_point1(_source_to_godot_direction(_parse_source_vector_string(_dict_string(p_keyvalues, "point1"))) * SOURCE_UNIT_TO_METERS);
-		ladder->set_ladder_surface_properties(_dict_string(p_keyvalues, "ladderSurfaceProperties"));
-		ladder->set_fake_ladder((_dict_int(p_keyvalues, "spawnflags", 0) & 1) != 0);
-	}
-	if (SourcePPLadderDismount3D *dismount = Object::cast_to<SourcePPLadderDismount3D>(p_node)) {
-		dismount->set_ladder_target(_dict_string(p_keyvalues, "target"));
-	}
-	if (Light3D *light = Object::cast_to<Light3D>(p_node)) {
-		Color light_color = Color(1, 1, 1);
-		float light_energy = 1.0f;
-		_parse_source_light_value(p_keyvalues, light_color, light_energy);
-		light->set_color(light_color);
-		light->set_param(Light3D::PARAM_ENERGY, light_energy);
-		light->set_param(Light3D::PARAM_INDIRECT_ENERGY, light_energy);
-		light->set_bake_mode(Light3D::BAKE_DYNAMIC);
-		light->set_shadow(_dict_bool(p_keyvalues, "spawnflags", false) || _dict_bool(p_keyvalues, "enableshadows", false));
-		light->set_meta("sourcepp_light_color", light_color);
-		light->set_meta("sourcepp_light_energy", light_energy);
-	}
-	if (OmniLight3D *omni_light = Object::cast_to<OmniLight3D>(p_node)) {
-		const float range = _source_light_range_from_keyvalues(p_keyvalues, 512.0f);
-		omni_light->set_param(Light3D::PARAM_RANGE, range);
-		omni_light->set_param(Light3D::PARAM_ATTENUATION, 1.0f);
-		omni_light->set_meta("sourcepp_light_range", range);
-	}
-	if (SpotLight3D *spot_light = Object::cast_to<SpotLight3D>(p_node)) {
-		_apply_source_light_direction(spot_light, p_keyvalues);
-		const float range = _source_light_range_from_keyvalues(p_keyvalues, 768.0f);
-		const float outer_cone = CLAMP(_dict_float(p_keyvalues, "_cone", 45.0), 1.0, 179.0);
-		const float inner_cone = CLAMP(_dict_float(p_keyvalues, "_inner_cone", outer_cone * 0.5), 0.0, outer_cone);
-		spot_light->set_param(Light3D::PARAM_RANGE, range);
-		spot_light->set_param(Light3D::PARAM_ATTENUATION, 1.0f);
-		spot_light->set_param(Light3D::PARAM_SPOT_ANGLE, outer_cone);
-		spot_light->set_param(Light3D::PARAM_SPOT_ATTENUATION, MAX(1.0f, 1.0f + static_cast<float>((outer_cone - inner_cone) / MAX(outer_cone, 1.0))));
-		spot_light->set_meta("sourcepp_light_range", range);
-		spot_light->set_meta("sourcepp_light_outer_cone", outer_cone);
-		spot_light->set_meta("sourcepp_light_inner_cone", inner_cone);
-	}
-	if (DirectionalLight3D *directional_light = Object::cast_to<DirectionalLight3D>(p_node)) {
-		_apply_source_light_direction(directional_light, p_keyvalues);
-		directional_light->set_param(Light3D::PARAM_ENERGY, MAX(directional_light->get_param(Light3D::PARAM_ENERGY), 1.0f));
-		directional_light->set_sky_mode(DirectionalLight3D::SKY_MODE_LIGHT_AND_SKY);
-	}
-}
-
-void _add_sourcepp_geometry_child(Node3D *p_node, const Ref<ArrayMesh> &p_mesh, const String &p_source_path, int p_model_index, int p_entity_index, const Dictionary &p_asset_metadata) {
-	if (p_mesh.is_null() || p_mesh->get_surface_count() == 0) {
-		return;
-	}
-
-	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
-	mesh_instance->set_name("Geometry");
-	mesh_instance->set_mesh(p_mesh);
-	mesh_instance->set_meta("sourcepp_bsp_path", p_source_path);
-	mesh_instance->set_meta("sourcepp_bsp_model_index", p_model_index);
-	mesh_instance->set_meta("sourcepp_bsp_entity_index", p_entity_index);
-	mesh_instance->set_meta("sourcepp_bsp_asset_metadata", p_asset_metadata);
-	p_node->add_child(mesh_instance);
-}
-
-void _add_sourcepp_collision_child(Node3D *p_node, const Ref<ArrayMesh> &p_mesh, const String &p_source_path, int p_model_index, int p_entity_index, bool p_disabled = false) {
-	const PackedVector3Array collision_faces = _build_collision_faces_from_mesh(p_mesh);
-	if (collision_faces.is_empty()) {
-		return;
-	}
-
-	Ref<BSPShape3D> bsp_shape;
-	bsp_shape.instantiate();
-	bsp_shape->set_faces(collision_faces);
-
-	CollisionShape3D *collision_shape = memnew(CollisionShape3D);
-	collision_shape->set_name("BSPShape3D");
-	collision_shape->set_shape(bsp_shape);
-	collision_shape->set_disabled(p_disabled);
-	collision_shape->set_meta("sourcepp_bsp_path", p_source_path);
-	collision_shape->set_meta("sourcepp_bsp_model_index", p_model_index);
-	collision_shape->set_meta("sourcepp_bsp_entity_index", p_entity_index);
-	collision_shape->set_meta("sourcepp_bsp_collision_face_count", bsp_shape->get_face_count());
-	collision_shape->set_meta("sourcepp_bsp_collision_bounds", bsp_shape->get_bounds());
-	p_node->add_child(collision_shape);
 }
 
 } // namespace
@@ -981,10 +235,6 @@ String SourcePPBSP::_from_utf8(std::string_view p_string) {
 	return String::utf8(p_string.data(), static_cast<int>(p_string.size()));
 }
 
-Vector3 SourcePPBSP::_source_to_godot_position(const sourcepp::math::Vec3f &p_position) {
-	return Vector3(p_position[0], p_position[2], -p_position[1]) * SOURCE_UNIT_TO_METERS;
-}
-
 int32_t SourcePPBSP::_read_lump_i32(const std::vector<std::byte> &p_bytes, size_t p_offset, bool p_big_endian) {
 	if (p_offset + sizeof(uint32_t) > p_bytes.size()) {
 		return -1;
@@ -1083,16 +333,16 @@ Error SourcePPBSP::_rebuild_current_halfedge_mesh() {
 }
 
 String SourcePPBSP::_resolve_material_path(const String &p_material_name) const {
-	const String normalized_material_path = _normalize_source_path(p_material_name);
+	const String normalized_material_path = SourcePPUtils::normalize_source_path(p_material_name);
 	if (normalized_material_path.is_empty()) {
 		return String();
 	}
 
-	const String relative_material_path = _with_vmt_extension(_strip_material_prefix(normalized_material_path));
+	const String relative_material_path = SourcePPUtils::ensure_extension(SourcePPUtils::strip_material_prefix(normalized_material_path), "vmt");
 	const String materials_relative_path = String("materials/") + relative_material_path;
 
 	String game_root;
-	const String normalized_bsp_path = _normalize_source_path(source_path);
+	const String normalized_bsp_path = SourcePPUtils::normalize_source_path(source_path);
 	const int maps_index = normalized_bsp_path.find("/maps/") >= 0 ? normalized_bsp_path.find("/maps/") : (normalized_bsp_path.begins_with("maps/") ? 0 : -1);
 	if (maps_index > 0) {
 		game_root = normalized_bsp_path.substr(0, maps_index);
@@ -1106,7 +356,7 @@ String SourcePPBSP::_resolve_material_path(const String &p_material_name) const 
 	};
 
 	for (const String &candidate : candidates) {
-		if (!candidate.is_empty() && _path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
+		if (!candidate.is_empty() && SourcePPUtils::path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
 			return candidate;
 		}
 	}
@@ -1161,9 +411,9 @@ int SourcePPBSP::_get_entity_bmodel_index(const bsppp::BSPEntityKeyValues &p_ent
 }
 
 Transform3D SourcePPBSP::_get_entity_transform(const bsppp::BSPEntityKeyValues &p_entity) const {
-	const Vector3 source_origin = _parse_source_vector_string(_get_entity_value(p_entity, "origin"));
-	const Vector3 source_angles = _parse_source_vector_string(_get_entity_value(p_entity, "angles"));
-	return Transform3D(_source_angles_to_godot_basis(source_angles), _source_to_godot_direction(source_origin) * SOURCE_UNIT_TO_METERS);
+	const Vector3 source_origin = SourcePPUtils::parse_source_vector_string(_get_entity_value(p_entity, "origin"));
+	const Vector3 source_angles = SourcePPUtils::parse_source_vector_string(_get_entity_value(p_entity, "angles"));
+	return Transform3D(SourcePPUtils::source_angles_to_godot_basis(source_angles), SourcePPUtils::source_vector_to_godot_direction(source_origin) * SourcePPUtils::SOURCE_UNIT_TO_METERS);
 }
 
 Error SourcePPBSP::_cache_lumps() {
@@ -1244,7 +494,7 @@ bool SourcePPBSP::_is_skybox_material(int p_material_id) const {
 		return false;
 	}
 
-	const String normalized_material_path = _strip_material_prefix(material_paths[p_material_id]).replace("\\", "/").to_lower();
+	const String normalized_material_path = SourcePPUtils::strip_material_prefix(material_paths[p_material_id]).replace("\\", "/").to_lower();
 	return normalized_material_path == "tools/toolsskybox" ||
 			normalized_material_path == "tools/toolsskybox.vmt" ||
 			normalized_material_path == "tools/toolsskybox2d" ||
@@ -1351,12 +601,12 @@ Error SourcePPBSP::_cache_displacements() {
 	for (size_t dispinfo_index = 0; dispinfo_index < dispinfo_count; dispinfo_index++) {
 		const size_t offset = dispinfo_index * BSP_DISPINFO_SIZE;
 		DisplacementInfo info;
-		info.start_position = _read_source_vector3_le(*dispinfo_lump, offset);
-		info.disp_vert_start = _read_i32_le(*dispinfo_lump, offset + 12);
-		info.disp_tri_start = _read_i32_le(*dispinfo_lump, offset + 16);
-		info.power = _read_i32_le(*dispinfo_lump, offset + 20);
-		info.contents = _read_i32_le(*dispinfo_lump, offset + 32);
-		info.map_face = _read_u16_le(*dispinfo_lump, offset + 36);
+		info.start_position = SourcePPBSPLumpUtils::read_source_vector3_le(*dispinfo_lump, offset);
+		info.disp_vert_start = SourcePPBSPLumpUtils::read_i32_le(*dispinfo_lump, offset + 12);
+		info.disp_tri_start = SourcePPBSPLumpUtils::read_i32_le(*dispinfo_lump, offset + 16);
+		info.power = SourcePPBSPLumpUtils::read_i32_le(*dispinfo_lump, offset + 20);
+		info.contents = SourcePPBSPLumpUtils::read_i32_le(*dispinfo_lump, offset + 32);
+		info.map_face = SourcePPBSPLumpUtils::read_u16_le(*dispinfo_lump, offset + 36);
 		bsp_displacement_infos.push_back(info);
 	}
 
@@ -1366,8 +616,8 @@ Error SourcePPBSP::_cache_displacements() {
 		for (size_t dispvert_index = 0; dispvert_index < dispvert_count; dispvert_index++) {
 			const size_t offset = dispvert_index * BSP_DISPVERT_SIZE;
 			DisplacementVertex vertex;
-			vertex.vector = _read_source_vector3_le(*dispverts_lump, offset);
-			vertex.distance = _read_f32_le(*dispverts_lump, offset + 12);
+			vertex.vector = SourcePPBSPLumpUtils::read_source_vector3_le(*dispverts_lump, offset);
+			vertex.distance = SourcePPBSPLumpUtils::read_f32_le(*dispverts_lump, offset + 12);
 			bsp_displacement_vertices.push_back(vertex);
 		}
 	}
@@ -1377,7 +627,7 @@ Error SourcePPBSP::_cache_displacements() {
 		bsp_displacement_triangles.reserve(disptri_count);
 		for (size_t disptri_index = 0; disptri_index < disptri_count; disptri_index++) {
 			DisplacementTriangle triangle;
-			triangle.tags = _read_u16_le(*disptris_lump, disptri_index * BSP_DISPTRI_SIZE);
+			triangle.tags = SourcePPBSPLumpUtils::read_u16_le(*disptris_lump, disptri_index * BSP_DISPTRI_SIZE);
 			bsp_displacement_triangles.push_back(triangle);
 		}
 	}
@@ -1390,7 +640,7 @@ void SourcePPBSP::_record_asset_metadata(Dictionary *r_asset_metadata, const Str
 		return;
 	}
 
-	const String asset_path = _normalize_source_path(p_asset_path);
+	const String asset_path = SourcePPUtils::normalize_source_path(p_asset_path);
 	if (asset_path.is_empty()) {
 		return;
 	}
@@ -1413,7 +663,7 @@ Ref<Image> SourcePPBSP::_load_material_texture_array_image(int p_material_id, So
 	}
 
 	const String material_name = material_paths[p_material_id];
-	const String requested_material_path = _with_vmt_extension(_strip_material_prefix(_normalize_source_path(material_name)));
+	const String requested_material_path = SourcePPUtils::ensure_extension(SourcePPUtils::strip_material_prefix(SourcePPUtils::normalize_source_path(material_name)), "vmt");
 	const String material_path = _resolve_material_path(material_name);
 	if (material_path.is_empty()) {
 		Dictionary material_metadata;
@@ -1489,7 +739,7 @@ Ref<Image> SourcePPBSP::_load_material_texture_array_image(int p_material_id, So
 		texture_metadata["requested_texture_path"] = base_texture_request_path;
 		texture_metadata["resolved_texture_path"] = String();
 		texture_metadata["reason"] = base_texture_request_path.is_empty() ? "texture_not_declared" : "texture_not_found";
-		const String metadata_key = base_texture_request_path.is_empty() ? material_path + ":" + texture_role : _with_vtf_extension(base_texture_request_path);
+		const String metadata_key = base_texture_request_path.is_empty() ? material_path + ":" + texture_role : SourcePPUtils::ensure_extension(base_texture_request_path, "vtf");
 		_record_asset_metadata(r_asset_metadata, metadata_key, "texture", material_type, true, texture_metadata);
 		if (p_warn_missing) {
 			WARN_PRINT(vformat("SourcePP BSP material '%s' has no resolvable %s while importing '%s'.", material_path, texture_role, source_path));
@@ -1756,7 +1006,7 @@ Error SourcePPBSP::_build_atlased_surface_arrays(const Ref<HalfEdgeMesh> &p_mesh
 		const Dictionary face_projection = p_mesh->get_face_projection(face_index);
 		ERR_FAIL_COND_V_MSG(!face_projection.has("vertices"), ERR_INVALID_DATA, "Half-edge face projection data is missing for BSP triangulation.");
 		const PackedVector2Array projected_vertices = face_projection["vertices"];
-		const PackedInt32Array triangulated_indices = _triangulate_projected_polygon_preserve_winding(projected_vertices);
+		const PackedInt32Array triangulated_indices = SourcePPBSPGeometry::triangulate_projected_polygon_preserve_winding(projected_vertices);
 		if (triangulated_indices.is_empty()) {
 			continue;
 		}
@@ -1814,7 +1064,7 @@ Error SourcePPBSP::_cache_static_props() {
 	}
 
 	const int version = static_cast<int>(bsp->getGameLumpVersion(bsppp::BSPGameLump::SIGNATURE_STATIC_PROPS));
-	const size_t record_size = _static_prop_record_size(version);
+	const size_t record_size = SourcePPBSPLumpUtils::static_prop_record_size(version);
 	if (record_size == 0) {
 		WARN_PRINT(vformat("Unsupported BSP static prop lump version %d while importing '%s'.", version, source_path));
 		return OK;
@@ -1825,75 +1075,75 @@ Error SourcePPBSP::_cache_static_props() {
 
 	const std::vector<std::byte> &bytes = prop_lump.value();
 	size_t offset = 0;
-	if (!_can_read_bytes(bytes, offset, sizeof(int32_t))) {
+	if (!SourcePPBSPLumpUtils::can_read_bytes(bytes, offset, sizeof(int32_t))) {
 		return ERR_INVALID_DATA;
 	}
 
-	const int32_t dict_count = _read_i32_le(bytes, offset);
+	const int32_t dict_count = SourcePPBSPLumpUtils::read_i32_le(bytes, offset);
 	offset += sizeof(int32_t);
 	ERR_FAIL_COND_V_MSG(dict_count < 0, ERR_INVALID_DATA, "BSP static prop dictionary count is negative.");
-	ERR_FAIL_COND_V_MSG(!_can_read_bytes(bytes, offset, static_cast<size_t>(dict_count) * STATIC_PROP_NAME_LENGTH), ERR_INVALID_DATA, "BSP static prop dictionary is truncated.");
+	ERR_FAIL_COND_V_MSG(!SourcePPBSPLumpUtils::can_read_bytes(bytes, offset, static_cast<size_t>(dict_count) * STATIC_PROP_NAME_LENGTH), ERR_INVALID_DATA, "BSP static prop dictionary is truncated.");
 
 	PackedStringArray model_paths;
 	model_paths.resize(dict_count);
 	for (int dict_index = 0; dict_index < dict_count; dict_index++) {
-		String model_path = _normalize_source_path(_read_fixed_utf8_string(bytes, offset, STATIC_PROP_NAME_LENGTH));
+		String model_path = SourcePPUtils::normalize_source_path(SourcePPBSPLumpUtils::read_fixed_utf8_string(bytes, offset, STATIC_PROP_NAME_LENGTH));
 		if (!model_path.is_empty()) {
-			model_path = _with_mdl_extension(model_path);
+			model_path = SourcePPUtils::ensure_extension(model_path, "mdl");
 		}
 		model_paths.set(dict_index, model_path);
 		offset += STATIC_PROP_NAME_LENGTH;
 	}
 
-	ERR_FAIL_COND_V_MSG(!_can_read_bytes(bytes, offset, sizeof(int32_t)), ERR_INVALID_DATA, "BSP static prop leaf count is missing.");
-	const int32_t leaf_count = _read_i32_le(bytes, offset);
+	ERR_FAIL_COND_V_MSG(!SourcePPBSPLumpUtils::can_read_bytes(bytes, offset, sizeof(int32_t)), ERR_INVALID_DATA, "BSP static prop leaf count is missing.");
+	const int32_t leaf_count = SourcePPBSPLumpUtils::read_i32_le(bytes, offset);
 	offset += sizeof(int32_t);
 	ERR_FAIL_COND_V_MSG(leaf_count < 0, ERR_INVALID_DATA, "BSP static prop leaf count is negative.");
-	ERR_FAIL_COND_V_MSG(!_can_read_bytes(bytes, offset, static_cast<size_t>(leaf_count) * sizeof(uint16_t)), ERR_INVALID_DATA, "BSP static prop leaf array is truncated.");
+	ERR_FAIL_COND_V_MSG(!SourcePPBSPLumpUtils::can_read_bytes(bytes, offset, static_cast<size_t>(leaf_count) * sizeof(uint16_t)), ERR_INVALID_DATA, "BSP static prop leaf array is truncated.");
 
 	std::vector<uint16_t> leaves;
 	leaves.resize(static_cast<size_t>(leaf_count));
 	for (int leaf_index = 0; leaf_index < leaf_count; leaf_index++) {
-		leaves[static_cast<size_t>(leaf_index)] = _read_u16_le(bytes, offset);
+		leaves[static_cast<size_t>(leaf_index)] = SourcePPBSPLumpUtils::read_u16_le(bytes, offset);
 		offset += sizeof(uint16_t);
 	}
 
-	ERR_FAIL_COND_V_MSG(!_can_read_bytes(bytes, offset, sizeof(int32_t)), ERR_INVALID_DATA, "BSP static prop count is missing.");
-	const int32_t prop_count = _read_i32_le(bytes, offset);
+	ERR_FAIL_COND_V_MSG(!SourcePPBSPLumpUtils::can_read_bytes(bytes, offset, sizeof(int32_t)), ERR_INVALID_DATA, "BSP static prop count is missing.");
+	const int32_t prop_count = SourcePPBSPLumpUtils::read_i32_le(bytes, offset);
 	offset += sizeof(int32_t);
 	ERR_FAIL_COND_V_MSG(prop_count < 0, ERR_INVALID_DATA, "BSP static prop count is negative.");
-	ERR_FAIL_COND_V_MSG(!_can_read_bytes(bytes, offset, static_cast<size_t>(prop_count) * record_size), ERR_INVALID_DATA, "BSP static prop array is truncated.");
+	ERR_FAIL_COND_V_MSG(!SourcePPBSPLumpUtils::can_read_bytes(bytes, offset, static_cast<size_t>(prop_count) * record_size), ERR_INVALID_DATA, "BSP static prop array is truncated.");
 
 	static_props.reserve(static_cast<size_t>(prop_count));
 	for (int prop_index = 0; prop_index < prop_count; prop_index++) {
 		const size_t prop_offset = offset + static_cast<size_t>(prop_index) * record_size;
 		StaticProp prop;
-		prop.origin = _read_source_vector3_le(bytes, prop_offset + 0);
-		prop.angles = _read_source_vector3_le(bytes, prop_offset + 12);
-		prop.prop_type = _read_u16_le(bytes, prop_offset + 24);
-		prop.first_leaf = _read_u16_le(bytes, prop_offset + 26);
-		prop.leaf_count = _read_u16_le(bytes, prop_offset + 28);
-		prop.solid = _read_u8(bytes, prop_offset + 30);
-		prop.skin = _read_i32_le(bytes, prop_offset + 32);
-		prop.fade_min_dist = _read_f32_le(bytes, prop_offset + 36);
-		prop.fade_max_dist = _read_f32_le(bytes, prop_offset + 40);
-		prop.lighting_origin = _read_source_vector3_le(bytes, prop_offset + 44);
+		prop.origin = SourcePPBSPLumpUtils::read_source_vector3_le(bytes, prop_offset + 0);
+		prop.angles = SourcePPBSPLumpUtils::read_source_vector3_le(bytes, prop_offset + 12);
+		prop.prop_type = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 24);
+		prop.first_leaf = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 26);
+		prop.leaf_count = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 28);
+		prop.solid = SourcePPBSPLumpUtils::read_u8(bytes, prop_offset + 30);
+		prop.skin = SourcePPBSPLumpUtils::read_i32_le(bytes, prop_offset + 32);
+		prop.fade_min_dist = SourcePPBSPLumpUtils::read_f32_le(bytes, prop_offset + 36);
+		prop.fade_max_dist = SourcePPBSPLumpUtils::read_f32_le(bytes, prop_offset + 40);
+		prop.lighting_origin = SourcePPBSPLumpUtils::read_source_vector3_le(bytes, prop_offset + 44);
 		if (version <= 6) {
-			prop.flags = _read_u8(bytes, prop_offset + 31);
+			prop.flags = SourcePPBSPLumpUtils::read_u8(bytes, prop_offset + 31);
 			if (version >= 5) {
-				prop.forced_fade_scale = _read_f32_le(bytes, prop_offset + 56);
+				prop.forced_fade_scale = SourcePPBSPLumpUtils::read_f32_le(bytes, prop_offset + 56);
 			}
 			if (version >= 6) {
-				prop.min_dx_level = _read_u16_le(bytes, prop_offset + 60);
-				prop.max_dx_level = _read_u16_le(bytes, prop_offset + 62);
+				prop.min_dx_level = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 60);
+				prop.max_dx_level = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 62);
 			}
 		} else {
-			prop.forced_fade_scale = _read_f32_le(bytes, prop_offset + 56);
-			prop.min_dx_level = _read_u16_le(bytes, prop_offset + 60);
-			prop.max_dx_level = _read_u16_le(bytes, prop_offset + 62);
-			prop.flags = _read_u32_le(bytes, prop_offset + 64);
-			prop.lightmap_resolution_x = _read_u16_le(bytes, prop_offset + 68);
-			prop.lightmap_resolution_y = _read_u16_le(bytes, prop_offset + 70);
+			prop.forced_fade_scale = SourcePPBSPLumpUtils::read_f32_le(bytes, prop_offset + 56);
+			prop.min_dx_level = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 60);
+			prop.max_dx_level = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 62);
+			prop.flags = SourcePPBSPLumpUtils::read_u32_le(bytes, prop_offset + 64);
+			prop.lightmap_resolution_x = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 68);
+			prop.lightmap_resolution_y = SourcePPBSPLumpUtils::read_u16_le(bytes, prop_offset + 70);
 		}
 
 		if (prop.prop_type < static_cast<uint16_t>(model_paths.size())) {
@@ -2039,8 +1289,8 @@ bool SourcePPBSP::_append_displacement_mesh_data(const bsppp::BSPFace &p_face, c
 
 	const int side_quads = 1 << disp_info.power;
 	const int side_vertices = side_quads + 1;
-	const int disp_vertex_count = _disp_power_vertex_count(disp_info.power);
-	const int disp_triangle_count = _disp_power_triangle_count(disp_info.power);
+	const int disp_vertex_count = SourcePPBSPLumpUtils::displacement_power_vertex_count(disp_info.power);
+	const int disp_triangle_count = SourcePPBSPLumpUtils::displacement_power_triangle_count(disp_info.power);
 	if (disp_info.disp_vert_start < 0 || static_cast<int64_t>(disp_info.disp_vert_start) + disp_vertex_count > static_cast<int64_t>(bsp_displacement_vertices.size())) {
 		WARN_PRINT("Skipping BSP displacement with out-of-range displacement vertex data.");
 		return false;
@@ -2067,7 +1317,7 @@ bool SourcePPBSP::_append_displacement_mesh_data(const bsppp::BSPFace &p_face, c
 	PackedVector3Array reference_vertices;
 	reference_vertices.resize(4);
 	for (int i = 0; i < 4; i++) {
-		reference_vertices.set(i, _source_to_godot_direction(p_source_polygon[i]) * SOURCE_UNIT_TO_METERS);
+		reference_vertices.set(i, SourcePPUtils::source_vector_to_godot_direction(p_source_polygon[i]) * SourcePPUtils::SOURCE_UNIT_TO_METERS);
 	}
 	PackedInt32Array reference_polygon;
 	reference_polygon.push_back(0);
@@ -2075,7 +1325,7 @@ bool SourcePPBSP::_append_displacement_mesh_data(const bsppp::BSPFace &p_face, c
 	reference_polygon.push_back(2);
 	reference_polygon.push_back(1);
 	Plane reference_plane;
-	if (!_compute_polygon_plane(reference_vertices, reference_polygon, reference_plane)) {
+	if (!SourcePPBSPGeometry::compute_polygon_plane(reference_vertices, reference_polygon, reference_plane)) {
 		WARN_PRINT("Skipping BSP displacement with a degenerate base face.");
 		return false;
 	}
@@ -2096,7 +1346,7 @@ bool SourcePPBSP::_append_displacement_mesh_data(const bsppp::BSPFace &p_face, c
 			const Vector3 source_position = left.lerp(right, u) + disp_vertex.vector * disp_vertex.distance;
 			grid_indices[static_cast<size_t>(grid_index)] = r_vertices.size();
 			grid_uvs[static_cast<size_t>(grid_index)] = _get_face_uv(p_face, source_position);
-			r_vertices.push_back(_source_to_godot_direction(source_position) * SOURCE_UNIT_TO_METERS);
+			r_vertices.push_back(SourcePPUtils::source_vector_to_godot_direction(source_position) * SourcePPUtils::SOURCE_UNIT_TO_METERS);
 		}
 	}
 
@@ -2127,7 +1377,7 @@ bool SourcePPBSP::_append_displacement_mesh_data(const bsppp::BSPFace &p_face, c
 				triangle_uvs.push_back(grid_uvs[static_cast<size_t>(uv_indices[triangle_offset + 2])]);
 
 				Plane triangle_plane;
-				if (!_compute_polygon_plane(r_vertices, triangle, triangle_plane)) {
+				if (!SourcePPBSPGeometry::compute_polygon_plane(r_vertices, triangle, triangle_plane)) {
 					continue;
 				}
 				if (triangle_plane.normal.dot(reference_normal) < 0.0f) {
@@ -2191,7 +1441,7 @@ Error SourcePPBSP::_build_model_mesh_data(int p_model_index, PackedVector3Array 
 		PackedVector2Array polygon_uvs;
 		for (int source_vertex_index = 0; source_vertex_index < source_polygon.size(); source_vertex_index++) {
 			const int mesh_vertex_index = r_vertices.size();
-			r_vertices.push_back(_source_to_godot_direction(source_polygon[source_vertex_index]) * SOURCE_UNIT_TO_METERS);
+			r_vertices.push_back(SourcePPUtils::source_vector_to_godot_direction(source_polygon[source_vertex_index]) * SourcePPUtils::SOURCE_UNIT_TO_METERS);
 			polygon.push_back(mesh_vertex_index);
 			polygon_uvs.push_back(_get_face_uv(face, source_polygon[source_vertex_index]));
 		}
@@ -2200,23 +1450,23 @@ Error SourcePPBSP::_build_model_mesh_data(int p_model_index, PackedVector3Array 
 			polygon.remove_at(polygon.size() - 1);
 			polygon_uvs.remove_at(polygon_uvs.size() - 1);
 		}
-		if (!_simplify_bsp_polygon(r_vertices, polygon, &polygon_uvs)) {
+		if (!SourcePPBSPGeometry::simplify_polygon(r_vertices, polygon, &polygon_uvs)) {
 			continue;
 		}
-		if (_is_halfedge_compatible_polygon(r_vertices, polygon)) {
+		if (SourcePPBSPGeometry::is_halfedge_compatible_polygon(r_vertices, polygon)) {
 			PackedInt32Array reversed_polygon = polygon;
 			PackedVector2Array reversed_uvs = polygon_uvs;
-			_reverse_bsp_polygon(reversed_polygon);
-			_reverse_bsp_polygon_uvs(reversed_uvs);
-			if (_is_halfedge_compatible_polygon(r_vertices, reversed_polygon)) {
+			SourcePPBSPGeometry::reverse_polygon(reversed_polygon);
+			SourcePPBSPGeometry::reverse_polygon_uvs(reversed_uvs);
+			if (SourcePPBSPGeometry::is_halfedge_compatible_polygon(r_vertices, reversed_polygon)) {
 				r_faces.push_back(reversed_polygon);
 				r_face_material_ids.push_back(material_id);
 				r_face_uvs.push_back(reversed_uvs);
 			} else {
-				_append_triangulated_polygon(r_vertices, polygon, polygon_uvs, material_id, true, r_faces, r_face_material_ids, r_face_uvs);
+				SourcePPBSPGeometry::append_triangulated_polygon(r_vertices, polygon, polygon_uvs, material_id, true, r_faces, r_face_material_ids, r_face_uvs);
 			}
 		} else {
-			_append_triangulated_polygon(r_vertices, polygon, polygon_uvs, material_id, true, r_faces, r_face_material_ids, r_face_uvs);
+			SourcePPBSPGeometry::append_triangulated_polygon(r_vertices, polygon, polygon_uvs, material_id, true, r_faces, r_face_material_ids, r_face_uvs);
 		}
 	}
 
@@ -2394,7 +1644,7 @@ Node3D *SourcePPBSP::create_node() const {
 	mesh_instance->set_meta("sourcepp_bsp_asset_metadata", asset_metadata);
 	root_node->add_child(mesh_instance);
 
-	const PackedVector3Array collision_faces = _build_collision_faces_from_mesh(render_mesh);
+	const PackedVector3Array collision_faces = SourcePPBSPGeometry::build_collision_faces_from_mesh(render_mesh);
 	if (!collision_faces.is_empty()) {
 		StaticBody3D *collision_body = memnew(StaticBody3D);
 		collision_body->set_name("WorldCollision");
@@ -2438,7 +1688,7 @@ Node3D *SourcePPBSP::create_node() const {
 			prop_name = vformat("StaticProp_%d", prop_index);
 		}
 		prop_node->set_name(prop_name);
-		prop_node->set_transform(Transform3D(_source_angles_to_godot_basis(prop.angles), _source_to_godot_direction(prop.origin) * SOURCE_UNIT_TO_METERS));
+		prop_node->set_transform(Transform3D(SourcePPUtils::source_angles_to_godot_basis(prop.angles), SourcePPUtils::source_vector_to_godot_direction(prop.origin) * SourcePPUtils::SOURCE_UNIT_TO_METERS));
 		prop_node->set_meta("sourcepp_bsp_path", source_path);
 		prop_node->set_meta("sourcepp_static_prop_index", prop_index);
 		prop_node->set_meta("sourcepp_static_prop_model", prop.model_path);
@@ -2538,15 +1788,15 @@ Node3D *SourcePPBSP::create_node() const {
 		}
 
 		const Dictionary entity_keyvalues = _entity_to_dictionary(entity);
-		const Array entity_outputs = _parse_source_outputs(entity);
+		const Array entity_outputs = SourcePPBSPEntityUtils::parse_source_outputs(entity);
 
-		Node3D *entity_node = _create_sourcepp_entity_node(classname);
+		Node3D *entity_node = SourcePPBSPEntityUtils::create_brush_entity_node(classname);
 		entity_node->set_name(node_name);
 		Transform3D entity_transform = _get_entity_transform(entity);
 		entity_transform.basis = (entity_transform.basis * Basis(Vector3(1, 0, 0), Math::deg_to_rad(90.0))).orthonormalized();
 		entity_node->set_transform(entity_transform);
-		_setup_sourcepp_entity_node(entity_node, classname, targetname, entity_index, bmodel_index, entity_keyvalues, entity_outputs);
-		_configure_sourcepp_specific_node(entity_node, entity_keyvalues);
+		SourcePPBSPEntityUtils::setup_entity_node(entity_node, classname, targetname, entity_index, bmodel_index, entity_keyvalues, entity_outputs);
+		SourcePPBSPEntityUtils::configure_specific_node(entity_node, entity_keyvalues);
 		entity_node->set_meta("sourcepp_bsp_model_index", bmodel_index);
 		entity_node->set_meta("sourcepp_bsp_entity_index", entity_index);
 		entity_node->set_meta("sourcepp_bsp_entity_classname", classname);
@@ -2563,11 +1813,11 @@ Node3D *SourcePPBSP::create_node() const {
 			continue;
 		}
 
-		_add_sourcepp_geometry_child(entity_node, bmodel_mesh, source_path, bmodel_index, entity_index, asset_metadata);
+		SourcePPBSPEntityUtils::add_geometry_child(entity_node, bmodel_mesh, source_path, bmodel_index, entity_index, asset_metadata);
 		const String classname_lower = classname.to_lower();
-		if (_is_sourcepp_trigger_class(classname_lower) || _is_sourcepp_body_class(classname_lower)) {
+		if (SourcePPBSPEntityUtils::is_trigger_class(classname_lower) || SourcePPBSPEntityUtils::is_body_class(classname_lower)) {
 			const bool collision_disabled = classname_lower == "func_brush" && _dict_int(entity_keyvalues, "Solidity", 0) == 1;
-			_add_sourcepp_collision_child(entity_node, bmodel_mesh, source_path, bmodel_index, entity_index, collision_disabled);
+			SourcePPBSPEntityUtils::add_collision_child(entity_node, bmodel_mesh, source_path, bmodel_index, entity_index, collision_disabled);
 		}
 	}
 
@@ -2594,11 +1844,11 @@ Node3D *SourcePPBSP::create_node() const {
 		}
 
 		const String targetname = _get_entity_value(entity, "targetname");
-		const String model_path = _normalize_source_model_path(_get_entity_value(entity, "model"));
+		const String model_path = SourcePPBSPEntityUtils::normalize_source_model_path(_get_entity_value(entity, "model"));
 		const Dictionary entity_keyvalues = _entity_to_dictionary(entity);
-		const Array entity_outputs = _parse_source_outputs(entity);
+		const Array entity_outputs = SourcePPBSPEntityUtils::parse_source_outputs(entity);
 
-		Node3D *entity_node = _create_sourcepp_point_entity_node(classname);
+		Node3D *entity_node = SourcePPBSPEntityUtils::create_point_entity_node(classname);
 		String node_name = targetname.is_empty() ? classname : classname + "_" + targetname;
 		if (targetname.is_empty() && !model_path.is_empty()) {
 			node_name += "_" + model_path.get_file().get_basename();
@@ -2609,11 +1859,11 @@ Node3D *SourcePPBSP::create_node() const {
 		}
 		entity_node->set_name(node_name);
 		entity_node->set_transform(_get_entity_transform(entity));
-		_setup_sourcepp_entity_node(entity_node, classname, targetname, entity_index, -1, entity_keyvalues, entity_outputs);
-		_configure_sourcepp_specific_node(entity_node, entity_keyvalues);
+		SourcePPBSPEntityUtils::setup_entity_node(entity_node, classname, targetname, entity_index, -1, entity_keyvalues, entity_outputs);
+		SourcePPBSPEntityUtils::configure_specific_node(entity_node, entity_keyvalues);
 		entity_node->set_meta("sourcepp_bsp_entity_model", model_path);
-		entity_node->set_meta("sourcepp_bsp_entity_is_dynamic_model", _is_sourcepp_dynamic_model_entity_class(classname_lower));
-		entity_node->set_meta("sourcepp_bsp_entity_is_physics_model", _is_sourcepp_physics_entity_class(classname_lower));
+		entity_node->set_meta("sourcepp_bsp_entity_is_dynamic_model", SourcePPBSPEntityUtils::is_dynamic_model_entity_class(classname_lower));
+		entity_node->set_meta("sourcepp_bsp_entity_is_physics_model", SourcePPBSPEntityUtils::is_physics_entity_class(classname_lower));
 
 		if (point_entities_node == nullptr) {
 			point_entities_node = memnew(Node3D);
@@ -2666,9 +1916,9 @@ Node3D *SourcePPBSP::create_node() const {
 		model_node->set_meta("sourcepp_bsp_entity_model", model_path);
 		entity_node->add_child(model_node);
 
-		if (_is_sourcepp_physics_entity_class(classname_lower)) {
+		if (SourcePPBSPEntityUtils::is_physics_entity_class(classname_lower)) {
 			if (CollisionObject3D *collision_body = Object::cast_to<CollisionObject3D>(entity_node)) {
-				_add_sourcepp_bounds_collision_child(collision_body, model_node, source_path, entity_index, model_path);
+				SourcePPBSPEntityUtils::add_bounds_collision_child(collision_body, model_node, source_path, entity_index, model_path);
 			}
 		}
 	}

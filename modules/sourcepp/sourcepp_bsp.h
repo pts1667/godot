@@ -96,7 +96,6 @@ class SourcePPBSP : public RefCounted {
 
 	static std::string _to_utf8(const String &p_string);
 	static String _from_utf8(std::string_view p_string);
-	static Vector3 _source_to_godot_position(const sourcepp::math::Vec3f &p_position);
 	static int32_t _read_lump_i32(const std::vector<std::byte> &p_bytes, size_t p_offset, bool p_big_endian);
 	static String _read_lump_string(const std::vector<std::byte> &p_bytes, int32_t p_offset);
 	void _clear_temporary_backing_file();
