@@ -5,8 +5,8 @@
 	</brief_description>
 	<description>
 		[SourcePPBSP] exposes a first-cut wrapper over SourcePP's BSP reader for Source engine maps.
-		It currently focuses on brush-model surface extraction for later import work: it can open a BSP, list the discovered materials, keep one editable [HalfEdgeMesh] and aligned face-material map as object state, and generate a renderable node from that current state.
-		Displacement surfaces are skipped for now.
+		It can open a BSP, list the discovered materials, keep one editable [HalfEdgeMesh] and aligned face-material map as object state, and generate a renderable node from that current state.
+		Displacement surfaces are baked into generated world and brush-model geometry. Displacement vertex alpha values and triangle tags are ignored.
 		Returned vertices are converted from Source inches and axes into Godot meters and orientation.
 	</description>
 	<tutorials>
@@ -24,8 +24,12 @@
 				Creates a 3D node hierarchy from the selected BSP brush model.
 				When [member model_index] is [code]0[/code], the returned root node stores BSP metadata, contains a [MeshInstance3D] child named [code]WorldGeometry[/code] for worldspawn, contains a [code]StaticProps[/code] child with nodes created from the BSP static-prop game lump, contains a [code]BModels[/code] child with placed brush-model entity nodes for entity [code]model="*N"[/code] references, and contains a [code]PointEntities[/code] child with non-brush entity-lump nodes.
 				Entity nodes store [code]sourcepp_bsp_entity_keyvalues[/code] plus model/entity index metadata. Brush entities put generated brush geometry in a [code]Geometry[/code] child. Model-backed point entities put imported MDL content in a [code]Model[/code] child, and physics prop classes receive a generated bounds collision shape.
+				Common Source light entities are mapped to built-in Godot light nodes: [code]light[/code] becomes [OmniLight3D], [code]light_spot[/code] becomes [SpotLight3D], and [code]light_environment[/code] or [code]env_sun[/code] become [DirectionalLight3D]. Only the first [code]light_environment[/code] is imported.
 				When [member model_index] is nonzero, only that brush model is emitted for inspection.
-				World geometry is emitted as separate opaque and transparent Godot mesh surfaces using generated shader materials.
+				World geometry is emitted as separate opaque, transparent, and water Godot mesh surfaces using generated shader materials.
+				Skybox tool materials [code]tools/toolsskybox[/code] and [code]tools/toolsskybox2d[/code] are skipped and do not contribute geometry or collision.
+				Displacement surfaces are emitted as regular triangles in [code]WorldGeometry[/code], so they are also included in the generated concave [code]WorldCollision[/code].
+				Water VMT shaders are imported into an animated transparent water surface using their resolved [code]$basetexture[/code], or [code]$normalmap[/code] when the water material has no base texture.
 				World geometry also gets a [StaticBody3D] child named [code]WorldCollision[/code] with a [CollisionShape3D] using [BSPShape3D].
 				Each shader samples a [Texture2DArray], while each vertex stores the BSP material layer in a custom mesh attribute.
 				Opaque materials use alpha scissor for cutout texture pixels; blended materials are kept in the transparent surface.
@@ -61,6 +65,12 @@
 			<return type="int" />
 			<description>
 				Returns the number of static props cached from the BSP's static-prop game lump.
+			</description>
+		</method>
+		<method name="get_displacement_count">
+			<return type="int" />
+			<description>
+				Returns the number of displacement records cached from the BSP displacement info lump.
 			</description>
 		</method>
 		<method name="get_model_index">

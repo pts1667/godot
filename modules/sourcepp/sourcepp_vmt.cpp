@@ -165,8 +165,11 @@ PackedStringArray _get_supported_texture_keys() {
 		"$basetexture",
 		"$detail",
 		"$bumpmap",
+		"$normalmap",
 		"$selfillummask",
 		"$envmapmask",
+		"$reflecttexture",
+		"$refracttexture",
 	};
 }
 
@@ -556,6 +559,20 @@ String SourcePPVMT::get_resolved_bump_map_path() const {
 	return _resolve_texture_asset_path(get_bump_map_path());
 }
 
+String SourcePPVMT::get_normal_map_path() const {
+	const String normal_map = _get_texture_path_for_key("$normalmap");
+	if (!normal_map.is_empty()) {
+		return normal_map;
+	}
+	const String shader_name = get_shader().strip_edges().to_lower();
+	return shader_name == "water" || shader_name.begins_with("water_") ? String("dev/water_normal") : String();
+}
+
+String SourcePPVMT::get_resolved_normal_map_path() const {
+	ERR_FAIL_COND_V_MSG(get_material() == nullptr, String(), "SourcePPVMT must be opened before use.");
+	return _resolve_texture_asset_path(get_normal_map_path());
+}
+
 String SourcePPVMT::get_self_illum_mask_path() const {
 	return _get_texture_path_for_key("$selfillummask");
 }
@@ -694,6 +711,8 @@ void SourcePPVMT::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_resolved_detail_texture_path"), &SourcePPVMT::get_resolved_detail_texture_path);
 	ClassDB::bind_method(D_METHOD("get_bump_map_path"), &SourcePPVMT::get_bump_map_path);
 	ClassDB::bind_method(D_METHOD("get_resolved_bump_map_path"), &SourcePPVMT::get_resolved_bump_map_path);
+	ClassDB::bind_method(D_METHOD("get_normal_map_path"), &SourcePPVMT::get_normal_map_path);
+	ClassDB::bind_method(D_METHOD("get_resolved_normal_map_path"), &SourcePPVMT::get_resolved_normal_map_path);
 	ClassDB::bind_method(D_METHOD("get_self_illum_mask_path"), &SourcePPVMT::get_self_illum_mask_path);
 	ClassDB::bind_method(D_METHOD("get_resolved_self_illum_mask_path"), &SourcePPVMT::get_resolved_self_illum_mask_path);
 	ClassDB::bind_method(D_METHOD("get_texture_dependencies"), &SourcePPVMT::get_texture_dependencies);

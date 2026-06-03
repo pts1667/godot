@@ -78,6 +78,8 @@ public:
 	String get_resolved_detail_texture_path() const;
 	String get_bump_map_path() const;
 	String get_resolved_bump_map_path() const;
+	String get_normal_map_path() const;
+	String get_resolved_normal_map_path() const;
 	String get_self_illum_mask_path() const;
 	String get_resolved_self_illum_mask_path() const;
 	Dictionary get_texture_dependencies() const;

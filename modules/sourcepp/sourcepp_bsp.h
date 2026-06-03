@@ -52,6 +52,24 @@ class SourcePPBSP : public RefCounted {
 	std::vector<bsppp::BSPTextureData> bsp_texture_data;
 	PackedStringArray material_paths;
 	std::vector<int> texdata_to_material_id;
+	struct DisplacementInfo {
+		Vector3 start_position;
+		int32_t disp_vert_start = 0;
+		int32_t disp_tri_start = 0;
+		int32_t power = 0;
+		int32_t contents = 0;
+		uint16_t map_face = 0;
+	};
+	struct DisplacementVertex {
+		Vector3 vector;
+		float distance = 0.0f;
+	};
+	struct DisplacementTriangle {
+		uint16_t tags = 0;
+	};
+	std::vector<DisplacementInfo> bsp_displacement_infos;
+	std::vector<DisplacementVertex> bsp_displacement_vertices;
+	std::vector<DisplacementTriangle> bsp_displacement_triangles;
 	struct StaticProp {
 		String model_path;
 		Vector3 origin;
@@ -87,10 +105,13 @@ class SourcePPBSP : public RefCounted {
 
 	Error _cache_lumps();
 	Error _cache_material_paths();
+	Error _cache_displacements();
 	Error _cache_static_props();
 	Error _rebuild_current_halfedge_mesh();
 	int _get_face_material_id(const bsppp::BSPFace &p_face) const;
+	bool _is_skybox_material(int p_material_id) const;
 	Vector2 _get_face_uv(const bsppp::BSPFace &p_face, const sourcepp::math::Vec3f &p_position) const;
+	Vector2 _get_face_uv(const bsppp::BSPFace &p_face, const Vector3 &p_position) const;
 	String _resolve_material_path(const String &p_material_name) const;
 	Dictionary _entity_to_dictionary(const bsppp::BSPEntityKeyValues &p_entity) const;
 	String _get_entity_value(const bsppp::BSPEntityKeyValues &p_entity, const String &p_key, const String &p_default = String()) const;
@@ -102,10 +123,13 @@ class SourcePPBSP : public RefCounted {
 	Ref<Image> _load_material_texture_array_image(int p_material_id, SourcePPImportCache *p_import_cache, const Ref<Image> &p_fallback_image, Image::AlphaMode *r_alpha_mode = nullptr, Dictionary *r_asset_metadata = nullptr, bool p_warn_missing = false) const;
 	Vector<Ref<Image>> _load_texture_array_images(SourcePPImportCache *p_import_cache, const Ref<Image> &p_fallback_image, Dictionary *r_asset_metadata, std::vector<Image::AlphaMode> &r_alpha_modes, bool p_warn_missing) const;
 	bool _is_material_transparent(int p_material_id, Image::AlphaMode p_alpha_mode, SourcePPImportCache *p_import_cache) const;
-	Ref<Material> _create_texture_array_material(bool p_transparent, const Vector<Ref<Image>> &p_layer_images) const;
-	Error _build_atlased_surface_arrays(const Ref<HalfEdgeMesh> &p_mesh, const PackedInt32Array &p_face_material_ids, const Array &p_face_uvs, bool p_transparent, const std::vector<bool> &p_transparent_materials, Array &r_arrays) const;
-	Ref<ArrayMesh> _create_array_mesh_from_halfedge(const Ref<HalfEdgeMesh> &p_mesh, const PackedInt32Array &p_face_material_ids, const Array &p_face_uvs, const std::vector<bool> &p_transparent_materials, const Vector<Ref<Material>> &p_surface_materials) const;
-	Ref<ArrayMesh> _create_model_array_mesh(int p_model_index, const std::vector<bool> &p_transparent_materials, const Vector<Ref<Material>> &p_surface_materials) const;
+	bool _is_material_water(int p_material_id, SourcePPImportCache *p_import_cache) const;
+	Ref<Material> _create_texture_array_material(int p_surface_type, const Vector<Ref<Image>> &p_layer_images) const;
+	Error _build_atlased_surface_arrays(const Ref<HalfEdgeMesh> &p_mesh, const PackedInt32Array &p_face_material_ids, const Array &p_face_uvs, int p_surface_type, const std::vector<bool> &p_transparent_materials, const std::vector<bool> &p_water_materials, Array &r_arrays) const;
+	Ref<ArrayMesh> _create_array_mesh_from_halfedge(const Ref<HalfEdgeMesh> &p_mesh, const PackedInt32Array &p_face_material_ids, const Array &p_face_uvs, const std::vector<bool> &p_transparent_materials, const std::vector<bool> &p_water_materials, const Vector<Ref<Material>> &p_surface_materials) const;
+	Ref<ArrayMesh> _create_model_array_mesh(int p_model_index, const std::vector<bool> &p_transparent_materials, const std::vector<bool> &p_water_materials, const Vector<Ref<Material>> &p_surface_materials) const;
+	bool _extract_face_source_polygon(const bsppp::BSPFace &p_face, PackedVector3Array &r_source_vertices) const;
+	bool _append_displacement_mesh_data(const bsppp::BSPFace &p_face, const PackedVector3Array &p_source_polygon, int p_material_id, PackedVector3Array &r_vertices, Array &r_faces, PackedInt32Array &r_face_material_ids, Array &r_face_uvs) const;
 	Error _build_model_mesh_data(int p_model_index, PackedVector3Array &r_vertices, Array &r_faces, PackedInt32Array &r_face_material_ids, Array &r_face_uvs) const;
 
 public:
@@ -133,6 +157,7 @@ public:
 	int get_map_revision() const;
 	int get_model_count() const;
 	int get_static_prop_count() const;
+	int get_displacement_count() const;
 	PackedStringArray get_material_paths() const;
 	Node3D *create_node() const;
 };
