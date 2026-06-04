@@ -8,7 +8,7 @@
 
 #include "source_anim_player.h"
 
-#include "sourcepp_resolver.h"
+#include "source_mdl_animation_data.h"
 #include "source_anim_player_utils.h"
 
 #include "core/error/error_macros.h"
@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
 
 using namespace source_anim_player_utils;
 
@@ -32,12 +33,15 @@ SourceAnimPlayer::SourceAnimPlayer() = default;
 
 SourceAnimPlayer::~SourceAnimPlayer() = default;
 
-void SourceAnimPlayer::set_resolver(const Ref<SourcePPResolver> &p_resolver) {
-	resolver = p_resolver;
-}
-
-void SourceAnimPlayer::set_resolver_game_id(const String &p_game_id) {
-	resolver_game_id = p_game_id.strip_edges().to_lower();
+void SourceAnimPlayer::set_animation_data(const Ref<SourceMDLAnimationData> &p_animation_data) {
+	animation_data.unref();
+	_close_model(false);
+	animation_data = p_animation_data;
+	if (animation_data.is_valid()) {
+		const Error open_error = _open_animation_data_resource();
+		ERR_FAIL_COND_MSG(open_error != OK, "Failed to open SourceMDLAnimationData.");
+	}
+	update_configuration_warnings();
 }
 
 std::string SourceAnimPlayer::_to_utf8(const String &p_string) {
@@ -58,7 +62,7 @@ String SourceAnimPlayer::_resolve_companion_path(const String &p_model_path, con
 	const String base = p_model_path.get_basename();
 	for (const String &suffix : p_candidates) {
 		const String candidate = base + suffix;
-		if (_path_exists_with_resolver(candidate, resolver, resolver_game_id)) {
+		if (FileAccess::exists(candidate)) {
 			return candidate;
 		}
 	}
@@ -73,17 +77,6 @@ Vector<uint8_t> SourceAnimPlayer::_read_file_bytes(const String &p_path, Error *
 			*r_error = OK;
 		}
 		return bytes;
-	}
-
-	if (resolver.is_valid()) {
-		const PackedByteArray resolved = resolver_game_id.is_empty() ? resolver->read_file(p_path) : resolver->read_file(p_path, resolver_game_id);
-		const bool has_resolved_file = resolver_game_id.is_empty() ? resolver->has_file(p_path) : resolver->has_file(p_path, resolver_game_id);
-		if (!resolved.is_empty() || has_resolved_file) {
-			if (r_error != nullptr) {
-				*r_error = OK;
-			}
-			return _packed_to_vector(resolved);
-		}
 	}
 
 	if (r_error != nullptr) {
@@ -105,11 +98,32 @@ Error SourceAnimPlayer::_open_bytes(const Vector<uint8_t> &p_mdl_data, const Vec
 		loaded->setAnimBlockData(_to_byte_vector(p_anim_block_data));
 	}
 
-	model = std::move(loaded);
-	sampled_animation_cache.clear();
+	animation_data.instantiate();
+	const Error bake_error = animation_data->bake_from_studio_model(*loaded);
+	if (bake_error != OK) {
+		animation_data.unref();
+		return bake_error;
+	}
 	_reset_controller_values();
 	_refresh_bone_map();
 	_rebuild_ik_runtime();
+	return OK;
+}
+
+Error SourceAnimPlayer::_open_animation_data_resource() {
+	ERR_FAIL_COND_V_MSG(animation_data.is_null(), ERR_UNCONFIGURED, "SourceAnimPlayer does not have animation data assigned.");
+	ERR_FAIL_COND_V_MSG(!animation_data->has_required_data(), ERR_INVALID_DATA, "SourceMDLAnimationData is missing required animation data.");
+
+	mdl_path = animation_data->get_mdl_path();
+	vtx_path = String();
+	vvd_path = String();
+	_reset_controller_values();
+	_update_skeleton_cache();
+	if (sequence_descriptor >= 0) {
+		_apply_pose();
+	} else {
+		_reset_mapped_bone_poses();
+	}
 	return OK;
 }
 
@@ -130,12 +144,13 @@ void SourceAnimPlayer::_clear_ik_runtime() {
 void SourceAnimPlayer::_rebuild_ik_runtime() {
 	_clear_ik_runtime();
 	Skeleton3D *skeleton = _get_skeleton();
-	if (model == nullptr || skeleton == nullptr || model_to_skeleton_bones.size() != static_cast<int>(model->mdl.bones.size())) {
+	if (animation_data.is_null() || skeleton == nullptr || model_to_skeleton_bones.size() != animation_data->get_bone_count()) {
 		return;
 	}
 
-	for (int chain_index = 0; chain_index < static_cast<int>(model->mdl.ikChains.size()); chain_index++) {
-		const mdlpp::MDL::IKChain &ik_chain = model->mdl.ikChains[static_cast<size_t>(chain_index)];
+	const std::vector<SourceMDLAnimationData::IKChain> &ik_chains = animation_data->get_ik_chains();
+	for (int chain_index = 0; chain_index < static_cast<int>(ik_chains.size()); chain_index++) {
+		const SourceMDLAnimationData::IKChain &ik_chain = ik_chains[static_cast<size_t>(chain_index)];
 		if (ik_chain.links.size() < 3) {
 			continue;
 		}
@@ -159,8 +174,11 @@ void SourceAnimPlayer::_rebuild_ik_runtime() {
 		float pole_distance = 0.0f;
 		for (size_t link_index = 1; link_index < ik_chain.links.size(); link_index++) {
 			const int model_bone = ik_chain.links[link_index].bone;
-			if (model_bone >= 0 && model_bone < static_cast<int>(model->mdl.bones.size())) {
-				pole_distance += MAX(_to_vector3(model->mdl.bones[static_cast<size_t>(model_bone)].position).length(), 0.0f);
+			if (model_bone >= 0 && model_bone < model_to_skeleton_bones.size()) {
+				const int skeleton_bone = model_to_skeleton_bones[model_bone];
+				if (skeleton_bone >= 0) {
+					pole_distance += MAX(skeleton->get_bone_rest(skeleton_bone).origin.length(), 0.0f);
+				}
 			}
 		}
 		runtime_chain.pole_distance = MAX(pole_distance, 0.1f);
@@ -252,19 +270,28 @@ Skeleton3D *SourceAnimPlayer::_get_skeleton() const {
 
 void SourceAnimPlayer::_refresh_bone_map() {
 	model_to_skeleton_bones.clear();
+	skeleton_to_model_bones.clear();
 	const Skeleton3D *skeleton = _get_skeleton();
-	if (model == nullptr || skeleton == nullptr) {
+	if (animation_data.is_null() || skeleton == nullptr) {
 		return;
 	}
 
-	model_to_skeleton_bones.resize(static_cast<int>(model->mdl.bones.size()));
+	model_to_skeleton_bones.resize(animation_data->get_bone_count());
 	for (int i = 0; i < model_to_skeleton_bones.size(); i++) {
 		model_to_skeleton_bones.write[i] = -1;
 	}
+	skeleton_to_model_bones.resize(skeleton->get_bone_count());
+	for (int i = 0; i < skeleton_to_model_bones.size(); i++) {
+		skeleton_to_model_bones.write[i] = -1;
+	}
 
-	for (int bone_index = 0; bone_index < static_cast<int>(model->mdl.bones.size()); bone_index++) {
-		const String bone_name = _from_utf8(model->mdl.bones[static_cast<size_t>(bone_index)].name);
-		model_to_skeleton_bones.write[bone_index] = skeleton->find_bone(bone_name);
+	const PackedStringArray bone_names = animation_data->get_bone_names();
+	for (int bone_index = 0; bone_index < bone_names.size(); bone_index++) {
+		const int skeleton_bone = skeleton->find_bone(bone_names[bone_index]);
+		model_to_skeleton_bones.write[bone_index] = skeleton_bone;
+		if (skeleton_bone >= 0 && skeleton_bone < skeleton_to_model_bones.size()) {
+			skeleton_to_model_bones.write[skeleton_bone] = bone_index;
+		}
 	}
 	update_configuration_warnings();
 }
@@ -289,11 +316,11 @@ void SourceAnimPlayer::_set_processing_enabled(bool p_enabled) {
 	set_physics_process(false);
 }
 
-const mdlpp::MDL::BoneController *SourceAnimPlayer::_find_bone_controller(int p_input_field) const {
-	if (model == nullptr) {
+const SourceMDLAnimationData::BoneController *SourceAnimPlayer::_find_bone_controller(int p_input_field) const {
+	if (animation_data.is_null()) {
 		return nullptr;
 	}
-	for (const mdlpp::MDL::BoneController &controller : model->mdl.boneControllers) {
+	for (const SourceMDLAnimationData::BoneController &controller : animation_data->get_bone_controllers()) {
 		if (controller.inputField == p_input_field) {
 			return &controller;
 		}
@@ -306,10 +333,10 @@ void SourceAnimPlayer::_reset_controller_values() {
 	for (int i = 0; i < controller_values.size(); i++) {
 		controller_values.set(i, 0.0f);
 	}
-	if (model == nullptr) {
+	if (animation_data.is_null()) {
 		return;
 	}
-	for (const mdlpp::MDL::BoneController &controller : model->mdl.boneControllers) {
+	for (const SourceMDLAnimationData::BoneController &controller : animation_data->get_bone_controllers()) {
 		if (controller.inputField < 0 || controller.inputField >= controller_values.size()) {
 			continue;
 		}
@@ -318,11 +345,11 @@ void SourceAnimPlayer::_reset_controller_values() {
 }
 
 void SourceAnimPlayer::_apply_bone_controllers(PoseBuffer &r_pose) const {
-	if (model == nullptr || controller_values.is_empty()) {
+	if (animation_data.is_null() || controller_values.is_empty()) {
 		return;
 	}
 
-	for (const mdlpp::MDL::BoneController &controller : model->mdl.boneControllers) {
+	for (const SourceMDLAnimationData::BoneController &controller : animation_data->get_bone_controllers()) {
 		const int bone = controller.bone;
 		if (bone < 0 || bone >= r_pose.positions.size()) {
 			continue;
@@ -369,58 +396,42 @@ void SourceAnimPlayer::_apply_bone_controllers(PoseBuffer &r_pose) const {
 }
 
 void SourceAnimPlayer::_initialize_pose_buffer(PoseBuffer &r_pose, bool p_delta) const {
-	ERR_FAIL_COND(model == nullptr);
-	r_pose.positions.resize(static_cast<int>(model->mdl.bones.size()));
-	r_pose.rotations.resize(static_cast<int>(model->mdl.bones.size()));
+	ERR_FAIL_COND(animation_data.is_null());
+	r_pose.positions.resize(animation_data->get_bone_count());
+	r_pose.rotations.resize(animation_data->get_bone_count());
 
-	for (int bone_index = 0; bone_index < static_cast<int>(model->mdl.bones.size()); bone_index++) {
+	const Skeleton3D *skeleton = _get_skeleton();
+	for (int bone_index = 0; bone_index < animation_data->get_bone_count(); bone_index++) {
 		if (p_delta) {
 			r_pose.positions.write[bone_index] = Vector3();
 			r_pose.rotations.write[bone_index] = Quaternion();
 		} else {
-			const mdlpp::MDL::Bone &bone = model->mdl.bones[static_cast<size_t>(bone_index)];
-			r_pose.positions.write[bone_index] = _to_vector3(bone.position);
-			r_pose.rotations.write[bone_index] = _to_quaternion(bone.rotationQuat);
+			int skeleton_bone = bone_index < model_to_skeleton_bones.size() ? model_to_skeleton_bones[bone_index] : -1;
+			if (skeleton != nullptr && skeleton_bone >= 0) {
+				const Transform3D rest = skeleton->get_bone_rest(skeleton_bone);
+				r_pose.positions.write[bone_index] = rest.origin;
+				r_pose.rotations.write[bone_index] = rest.basis.get_rotation_quaternion();
+			} else {
+				r_pose.positions.write[bone_index] = Vector3();
+				r_pose.rotations.write[bone_index] = Quaternion();
+			}
 		}
 	}
 }
 
-bool SourceAnimPlayer::_ensure_sampled_animation(int p_animation_descriptor) const {
-	if (model == nullptr || p_animation_descriptor < 0) {
-		return false;
-	}
-
-	if (sampled_animation_cache.contains(p_animation_descriptor)) {
-		return sampled_animation_cache.at(p_animation_descriptor) != nullptr;
-	}
-
-	auto sampled = std::make_unique<mdlpp::SampledAnimation>();
-	if (!model->sampleAnimation(p_animation_descriptor, *sampled)) {
-		sampled_animation_cache.emplace(p_animation_descriptor, nullptr);
-		return false;
-	}
-
-	sampled_animation_cache.emplace(p_animation_descriptor, std::move(sampled));
-	return true;
-}
-
-const mdlpp::SampledAnimation *SourceAnimPlayer::_get_sampled_animation(int p_animation_descriptor) const {
-	if (!_ensure_sampled_animation(p_animation_descriptor)) {
+const SourceMDLAnimationData::SampledAnimation *SourceAnimPlayer::_get_sampled_animation(int p_animation_descriptor) const {
+	if (animation_data.is_null() || p_animation_descriptor < 0) {
 		return nullptr;
 	}
-	const auto it = sampled_animation_cache.find(p_animation_descriptor);
-	if (it == sampled_animation_cache.end()) {
-		return nullptr;
-	}
-	return it->second.get();
+	return animation_data->find_animation(p_animation_descriptor);
 }
 
 double SourceAnimPlayer::_get_sequence_cycles_per_second(int p_sequence_descriptor) const {
-	if (model == nullptr || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size())) {
+	if (animation_data.is_null() || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size())) {
 		return 0.0;
 	}
 
-	const mdlpp::MDL::SequenceDesc &sequence_desc = model->mdl.sequenceDescs[static_cast<size_t>(p_sequence_descriptor)];
+	const SourceMDLAnimationData::SequenceDesc &sequence_desc = animation_data->get_sequences()[static_cast<size_t>(p_sequence_descriptor)];
 	const int group_x = MAX(sequence_desc.groupSize[0], 1);
 	const int group_y = MAX(sequence_desc.groupSize[1], 1);
 
@@ -451,7 +462,7 @@ double SourceAnimPlayer::_get_sequence_cycles_per_second(int p_sequence_descript
 			continue;
 		}
 
-		const mdlpp::SampledAnimation *sampled = _get_sampled_animation(sequence_desc.animationIndices[static_cast<size_t>(cell.index)]);
+		const SourceMDLAnimationData::SampledAnimation *sampled = _get_sampled_animation(sequence_desc.animationIndices[static_cast<size_t>(cell.index)]);
 		if (sampled == nullptr || sampled->fps <= 0.0f || sampled->frameCount <= 1) {
 			continue;
 		}
@@ -476,45 +487,52 @@ float SourceAnimPlayer::_get_normalized_cycle(int p_sequence_descriptor, double 
 		return 0.0f;
 	}
 
-	const mdlpp::MDL::SequenceDesc &sequence_desc = model->mdl.sequenceDescs[static_cast<size_t>(p_sequence_descriptor)];
+	const SourceMDLAnimationData::SequenceDesc &sequence_desc = animation_data->get_sequences()[static_cast<size_t>(p_sequence_descriptor)];
 	if (_sequence_loops(sequence_desc)) {
 		return static_cast<float>(Math::fposmod(p_time, length) / length);
 	}
 	return static_cast<float>(CLAMP(p_time / length, 0.0, 1.0));
 }
 
-void SourceAnimPlayer::_sample_animation_track(const mdlpp::SampledAnimation &p_animation, int p_bone, float p_cycle, bool p_looping, Vector3 &r_position, Quaternion &r_rotation) const {
+void SourceAnimPlayer::_sample_animation_track(const SourceMDLAnimationData::SampledAnimation &p_animation, int p_bone, float p_cycle, bool p_looping, Vector3 &r_position, Quaternion &r_rotation) const {
 	if (p_bone < 0 || p_bone >= static_cast<int>(p_animation.tracks.size()) || p_animation.frameCount <= 0) {
 		r_position = Vector3();
 		r_rotation = Quaternion();
 		return;
 	}
 
-	const mdlpp::SampledAnimationTrack &track = p_animation.tracks[static_cast<size_t>(p_bone)];
+	const SourceMDLAnimationData::SampledAnimationTrack &track = p_animation.tracks[static_cast<size_t>(p_bone)];
+	const int available_frame_count = MIN(static_cast<int>(track.positions.size()), static_cast<int>(track.rotations.size()));
+	if (available_frame_count <= 0) {
+		r_position = Vector3();
+		r_rotation = Quaternion();
+		return;
+	}
+
 	const float frame = CLAMP(p_cycle, 0.0f, 1.0f) * static_cast<float>(MAX(p_animation.frameCount - 1, 0));
-	const int frame_a = CLAMP(static_cast<int>(Math::floor(frame)), 0, p_animation.frameCount - 1);
+	const int frame_a = CLAMP(static_cast<int>(Math::floor(frame)), 0, available_frame_count - 1);
 	int frame_b = frame_a + 1;
-	if (frame_b >= p_animation.frameCount) {
-		frame_b = p_looping ? 0 : p_animation.frameCount - 1;
+	if (frame_b >= available_frame_count) {
+		frame_b = p_looping && available_frame_count > 1 ? 0 : frame_a;
 	}
 	const float weight = frame - static_cast<float>(frame_a);
 
-	const Vector3 pos_a = _to_vector3(track.positions[static_cast<size_t>(frame_a)]);
-	const Vector3 pos_b = _to_vector3(track.positions[static_cast<size_t>(frame_b)]);
-	const Quaternion rot_a = _to_quaternion(track.rotations[static_cast<size_t>(frame_a)]);
-	const Quaternion rot_b = _to_quaternion(track.rotations[static_cast<size_t>(frame_b)]);
+	const Vector3 pos_a = track.positions[static_cast<size_t>(frame_a)];
+	const Vector3 pos_b = track.positions[static_cast<size_t>(frame_b)];
+	const Quaternion rot_a = track.rotations[static_cast<size_t>(frame_a)];
+	const Quaternion rot_b = track.rotations[static_cast<size_t>(frame_b)];
 
 	r_position = pos_a.lerp(pos_b, weight);
 	r_rotation = rot_a.slerp(rot_b, weight).normalized();
 }
 
-void SourceAnimPlayer::_capture_ik_locks(const PoseBuffer &p_pose, const std::vector<mdlpp::MDL::IKLock> &p_ik_locks, int p_depth, Vector<PendingIKLock> &r_pending_locks) const {
-	if (model == nullptr || p_ik_locks.empty() || model->mdl.ikChains.empty()) {
+void SourceAnimPlayer::_capture_ik_locks(const PoseBuffer &p_pose, const std::vector<SourceMDLAnimationData::IKLock> &p_ik_locks, int p_depth, Vector<PendingIKLock> &r_pending_locks) const {
+	if (animation_data.is_null() || p_ik_locks.empty() || animation_data->get_ik_chains().empty()) {
 		return;
 	}
 
 	Vector<Transform3D> global_transforms;
-	global_transforms.resize(static_cast<int>(model->mdl.bones.size()));
+	global_transforms.resize(animation_data->get_bone_count());
 	Vector<uint8_t> computed;
 	computed.resize(global_transforms.size());
 	for (int i = 0; i < computed.size(); i++) {
@@ -530,7 +548,17 @@ void SourceAnimPlayer::_capture_ik_locks(const PoseBuffer &p_pose, const std::ve
 		}
 
 		Transform3D transform = _make_transform(p_pose.positions[p_bone], p_pose.rotations[p_bone]);
-		const int parent = model->mdl.bones[static_cast<size_t>(p_bone)].parent;
+		int parent = -1;
+		if (p_bone < model_to_skeleton_bones.size()) {
+			const int skeleton_bone = model_to_skeleton_bones[p_bone];
+			const Skeleton3D *skeleton = _get_skeleton();
+			if (skeleton != nullptr && skeleton_bone >= 0) {
+				const int skeleton_parent = skeleton->get_bone_parent(skeleton_bone);
+				if (skeleton_parent >= 0 && skeleton_parent < skeleton_to_model_bones.size()) {
+					parent = skeleton_to_model_bones[skeleton_parent];
+				}
+			}
+		}
 		if (parent >= 0) {
 			transform = self(self, parent) * transform;
 		}
@@ -539,18 +567,19 @@ void SourceAnimPlayer::_capture_ik_locks(const PoseBuffer &p_pose, const std::ve
 		return transform;
 	};
 
-	for (const mdlpp::MDL::IKLock &ik_lock : p_ik_locks) {
-		if (ik_lock.chain < 0 || ik_lock.chain >= static_cast<int>(model->mdl.ikChains.size())) {
+	const std::vector<SourceMDLAnimationData::IKChain> &ik_chains = animation_data->get_ik_chains();
+	for (const SourceMDLAnimationData::IKLock &ik_lock : p_ik_locks) {
+		if (ik_lock.chain < 0 || ik_lock.chain >= static_cast<int>(ik_chains.size())) {
 			continue;
 		}
 
-		const mdlpp::MDL::IKChain &ik_chain = model->mdl.ikChains[static_cast<size_t>(ik_lock.chain)];
+		const SourceMDLAnimationData::IKChain &ik_chain = ik_chains[static_cast<size_t>(ik_lock.chain)];
 		if (ik_chain.links.empty()) {
 			continue;
 		}
 
 		const int end_bone = ik_chain.links.back().bone;
-		if (end_bone < 0 || end_bone >= static_cast<int>(model->mdl.bones.size())) {
+		if (end_bone < 0 || end_bone >= animation_data->get_bone_count()) {
 			continue;
 		}
 
@@ -564,14 +593,14 @@ void SourceAnimPlayer::_capture_ik_locks(const PoseBuffer &p_pose, const std::ve
 		pending_lock.target_rotation = end_transform.basis.get_rotation_quaternion();
 
 		if (ik_chain.links.size() >= 3) {
-			const mdlpp::MDL::IKLink &root_link = ik_chain.links.front();
+			const SourceMDLAnimationData::IKLink &root_link = ik_chain.links.front();
 			const int knee_bone = ik_chain.links[1].bone;
-			const Vector3 knee_dir = _to_vector3(root_link.kneeDir);
+			const Vector3 knee_dir = root_link.kneeDir;
 			if (!knee_dir.is_zero_approx()) {
 				const Transform3D root_transform = compute_global_transform(compute_global_transform, root_link.bone);
 				pending_lock.knee_direction = root_transform.basis.xform(knee_dir).normalized();
 			}
-			if (knee_bone >= 0 && knee_bone < static_cast<int>(model->mdl.bones.size())) {
+			if (knee_bone >= 0 && knee_bone < animation_data->get_bone_count()) {
 				pending_lock.knee_position = compute_global_transform(compute_global_transform, knee_bone).origin;
 			}
 		}
@@ -581,11 +610,11 @@ void SourceAnimPlayer::_capture_ik_locks(const PoseBuffer &p_pose, const std::ve
 }
 
 void SourceAnimPlayer::_capture_sequence_locks(const PoseBuffer &p_pose, int p_sequence_descriptor, int p_depth, Vector<PendingIKLock> &r_pending_locks) const {
-	if (model == nullptr || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size())) {
+	if (animation_data.is_null() || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size())) {
 		return;
 	}
 
-	const mdlpp::MDL::SequenceDesc &sequence_desc = model->mdl.sequenceDescs[static_cast<size_t>(p_sequence_descriptor)];
+	const SourceMDLAnimationData::SequenceDesc &sequence_desc = animation_data->get_sequences()[static_cast<size_t>(p_sequence_descriptor)];
 	_capture_ik_locks(p_pose, sequence_desc.ikLocks, p_depth, r_pending_locks);
 }
 
@@ -645,11 +674,11 @@ void SourceAnimPlayer::_apply_pending_ik_locks(const Vector<PendingIKLock> &p_pe
 }
 
 void SourceAnimPlayer::_blend_pose(PoseBuffer &r_pose, const PoseBuffer &p_sample, int p_sequence_descriptor, float p_weight) const {
-	if (model == nullptr || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size()) || p_weight <= 0.0f) {
+	if (animation_data.is_null() || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size()) || p_weight <= 0.0f) {
 		return;
 	}
 
-	const mdlpp::MDL::SequenceDesc &sequence_desc = model->mdl.sequenceDescs[static_cast<size_t>(p_sequence_descriptor)];
+	const SourceMDLAnimationData::SequenceDesc &sequence_desc = animation_data->get_sequences()[static_cast<size_t>(p_sequence_descriptor)];
 	const bool is_delta = _sequence_is_delta(sequence_desc);
 	const bool post_delta = (static_cast<int>(sequence_desc.flags) & STUDIO_POST) != 0;
 
@@ -670,11 +699,11 @@ void SourceAnimPlayer::_blend_pose(PoseBuffer &r_pose, const PoseBuffer &p_sampl
 }
 
 bool SourceAnimPlayer::_evaluate_sequence_pose(int p_sequence_descriptor, float p_cycle, PoseBuffer &r_pose, Vector<PendingIKLock> *r_pending_locks, int p_depth) const {
-	if (model == nullptr || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size()) || p_depth > MAX_SEQUENCE_DEPTH) {
+	if (animation_data.is_null() || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size()) || p_depth > MAX_SEQUENCE_DEPTH) {
 		return false;
 	}
 
-	const mdlpp::MDL::SequenceDesc &sequence_desc = model->mdl.sequenceDescs[static_cast<size_t>(p_sequence_descriptor)];
+	const SourceMDLAnimationData::SequenceDesc &sequence_desc = animation_data->get_sequences()[static_cast<size_t>(p_sequence_descriptor)];
 	const bool is_delta = _sequence_is_delta(sequence_desc);
 	_initialize_pose_buffer(r_pose, is_delta);
 
@@ -709,7 +738,7 @@ bool SourceAnimPlayer::_evaluate_sequence_pose(int p_sequence_descriptor, float 
 		}
 
 		const int animation_descriptor = sequence_desc.animationIndices[static_cast<size_t>(cell.index)];
-		const mdlpp::SampledAnimation *sampled = _get_sampled_animation(animation_descriptor);
+		const SourceMDLAnimationData::SampledAnimation *sampled = _get_sampled_animation(animation_descriptor);
 		if (sampled == nullptr) {
 			continue;
 		}
@@ -740,7 +769,7 @@ bool SourceAnimPlayer::_evaluate_sequence_pose(int p_sequence_descriptor, float 
 	}
 
 	if (_sequence_is_local(sequence_desc)) {
-		for (const mdlpp::MDL::AutoLayer &layer : sequence_desc.autoLayers) {
+		for (const SourceMDLAnimationData::AutoLayer &layer : sequence_desc.autoLayers) {
 			if ((layer.flags & STUDIO_AL_LOCAL) == 0) {
 				continue;
 			}
@@ -784,7 +813,7 @@ bool SourceAnimPlayer::_evaluate_sequence_pose(int p_sequence_descriptor, float 
 }
 
 bool SourceAnimPlayer::_accumulate_sequence(PoseBuffer &r_pose, int p_sequence_descriptor, float p_cycle, float p_weight, Vector<PendingIKLock> *r_pending_locks, int p_depth) const {
-	if (model == nullptr || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size()) || p_weight <= 0.0f || p_depth > MAX_SEQUENCE_DEPTH) {
+	if (animation_data.is_null() || p_sequence_descriptor < 0 || p_sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size()) || p_weight <= 0.0f || p_depth > MAX_SEQUENCE_DEPTH) {
 		return false;
 	}
 
@@ -799,9 +828,9 @@ bool SourceAnimPlayer::_accumulate_sequence(PoseBuffer &r_pose, int p_sequence_d
 
 	_blend_pose(r_pose, sequence_pose, p_sequence_descriptor, p_weight);
 
-	const mdlpp::MDL::SequenceDesc &sequence_desc = model->mdl.sequenceDescs[static_cast<size_t>(p_sequence_descriptor)];
+	const SourceMDLAnimationData::SequenceDesc &sequence_desc = animation_data->get_sequences()[static_cast<size_t>(p_sequence_descriptor)];
 	bool contributed = true;
-	for (const mdlpp::MDL::AutoLayer &layer : sequence_desc.autoLayers) {
+	for (const SourceMDLAnimationData::AutoLayer &layer : sequence_desc.autoLayers) {
 		if ((layer.flags & STUDIO_AL_LOCAL) != 0) {
 			continue;
 		}
@@ -848,16 +877,16 @@ bool SourceAnimPlayer::_accumulate_sequence(PoseBuffer &r_pose, int p_sequence_d
 }
 
 void SourceAnimPlayer::_accumulate_autoplay_sequences(PoseBuffer &r_pose, Vector<PendingIKLock> *r_pending_locks) const {
-	if (model == nullptr) {
+	if (animation_data.is_null()) {
 		return;
 	}
 
 	if (r_pending_locks != nullptr) {
-		_capture_ik_locks(r_pose, model->mdl.ikAutoplayLocks, MAX_SEQUENCE_DEPTH + 1, *r_pending_locks);
+		_capture_ik_locks(r_pose, animation_data->get_parsed_ik_autoplay_locks(), MAX_SEQUENCE_DEPTH + 1, *r_pending_locks);
 	}
 
-	for (int autoplay_sequence = 0; autoplay_sequence < static_cast<int>(model->mdl.sequenceDescs.size()); autoplay_sequence++) {
-		const mdlpp::MDL::SequenceDesc &sequence_desc = model->mdl.sequenceDescs[static_cast<size_t>(autoplay_sequence)];
+	for (int autoplay_sequence = 0; autoplay_sequence < static_cast<int>(animation_data->get_sequences().size()); autoplay_sequence++) {
+		const SourceMDLAnimationData::SequenceDesc &sequence_desc = animation_data->get_sequences()[static_cast<size_t>(autoplay_sequence)];
 		if ((static_cast<int>(sequence_desc.flags) & STUDIO_AUTOPLAY) == 0) {
 			continue;
 		}
@@ -873,7 +902,7 @@ void SourceAnimPlayer::_accumulate_autoplay_sequences(PoseBuffer &r_pose, Vector
 }
 
 void SourceAnimPlayer::_emit_sequence_events(double p_previous_time, double p_current_time, bool p_looped) {
-	if (model == nullptr || sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size())) {
+	if (animation_data.is_null() || sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size())) {
 		return;
 	}
 
@@ -882,12 +911,12 @@ void SourceAnimPlayer::_emit_sequence_events(double p_previous_time, double p_cu
 		return;
 	}
 
-	const mdlpp::MDL::SequenceDesc &sequence_desc_ref = model->mdl.sequenceDescs[static_cast<size_t>(sequence_descriptor)];
+	const SourceMDLAnimationData::SequenceDesc &sequence_desc_ref = animation_data->get_sequences()[static_cast<size_t>(sequence_descriptor)];
 	auto emit_in_range = [&](double p_start_cycle, double p_end_cycle) {
 		for (int event_index = 0; event_index < static_cast<int>(sequence_desc_ref.events.size()); event_index++) {
-			const mdlpp::MDL::Event &event = sequence_desc_ref.events[static_cast<size_t>(event_index)];
+			const SourceMDLAnimationData::Event &event = sequence_desc_ref.events[static_cast<size_t>(event_index)];
 			if (event.cycle >= p_start_cycle && event.cycle < p_end_cycle) {
-				emit_signal(SNAME("sequence_event"), sequence_descriptor, event_index, _from_utf8(event.name), event.event, _from_utf8(event.options));
+				emit_signal(SNAME("sequence_event"), sequence_descriptor, event_index, event.name, event.event, event.options);
 			}
 		}
 	};
@@ -903,7 +932,7 @@ void SourceAnimPlayer::_emit_sequence_events(double p_previous_time, double p_cu
 }
 
 void SourceAnimPlayer::_apply_pose() {
-	if (model == nullptr || sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size())) {
+	if (animation_data.is_null() || sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size())) {
 		return;
 	}
 
@@ -912,7 +941,7 @@ void SourceAnimPlayer::_apply_pose() {
 		return;
 	}
 
-	if (model_to_skeleton_bones.size() != static_cast<int>(model->mdl.bones.size())) {
+	if (model_to_skeleton_bones.size() != animation_data->get_bone_count()) {
 		_refresh_bone_map();
 	}
 
@@ -946,7 +975,10 @@ void SourceAnimPlayer::set_skeleton_path(const NodePath &p_path) {
 	}
 	skeleton_path = p_path;
 	_update_skeleton_cache();
-	if (model != nullptr && sequence_descriptor >= 0) {
+	if (is_open()) {
+		_rebuild_ik_runtime();
+	}
+	if (is_open() && sequence_descriptor >= 0) {
 		_apply_pose();
 	}
 }
@@ -956,15 +988,17 @@ NodePath SourceAnimPlayer::get_skeleton_path() const {
 }
 
 void SourceAnimPlayer::set_sequence_descriptor(int p_sequence_descriptor) {
-	if (model == nullptr) {
+	if (!is_open()) {
 		sequence_descriptor = p_sequence_descriptor;
 		return;
 	}
-	ERR_FAIL_COND_MSG(p_sequence_descriptor < -1 || p_sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size()), "Requested sequence descriptor is out of range.");
+	ERR_FAIL_COND_MSG(p_sequence_descriptor < -1 || p_sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size()), "Requested sequence descriptor is out of range.");
 	sequence_descriptor = p_sequence_descriptor;
 	playback_time = 0.0;
-	if (model != nullptr && sequence_descriptor >= 0) {
+	if (sequence_descriptor >= 0) {
 		_apply_pose();
+	} else {
+		_reset_mapped_bone_poses();
 	}
 }
 
@@ -974,7 +1008,7 @@ int SourceAnimPlayer::get_sequence_descriptor() const {
 
 void SourceAnimPlayer::set_blend_values(const Vector2 &p_blend_values) {
 	blend_values = p_blend_values;
-	if (model != nullptr && sequence_descriptor >= 0) {
+	if (is_open() && sequence_descriptor >= 0) {
 		_apply_pose();
 	}
 }
@@ -988,7 +1022,7 @@ void SourceAnimPlayer::set_controller_values(const PackedFloat32Array &p_control
 	for (int i = 0; i < MIN(controller_values.size(), p_controller_values.size()); i++) {
 		controller_values.set(i, CLAMP(p_controller_values[i], 0.0f, 1.0f));
 	}
-	if (model != nullptr && sequence_descriptor >= 0) {
+	if (is_open() && sequence_descriptor >= 0) {
 		_apply_pose();
 	}
 }
@@ -1003,7 +1037,7 @@ void SourceAnimPlayer::set_controller_value(int p_input_field, float p_value) {
 		controller_values.resize(MAX_BONE_CONTROLLER_INPUTS);
 	}
 	controller_values.set(p_input_field, CLAMP(p_value, 0.0f, 1.0f));
-	if (model != nullptr && sequence_descriptor >= 0) {
+	if (is_open() && sequence_descriptor >= 0) {
 		_apply_pose();
 	}
 }
@@ -1018,7 +1052,7 @@ float SourceAnimPlayer::get_controller_value(int p_input_field) const {
 
 float SourceAnimPlayer::set_controller_ranged_value(int p_input_field, float p_value) {
 	ERR_FAIL_COND_V_MSG(p_input_field < 0 || p_input_field >= MAX_BONE_CONTROLLER_INPUTS, p_value, "Bone controller input field is out of range.");
-	const mdlpp::MDL::BoneController *controller = _find_bone_controller(p_input_field);
+	const SourceMDLAnimationData::BoneController *controller = _find_bone_controller(p_input_field);
 	ERR_FAIL_NULL_V_MSG(controller, p_value, "Requested bone controller input field was not found in the loaded MDL.");
 
 	float applied_value = p_value;
@@ -1028,7 +1062,7 @@ float SourceAnimPlayer::set_controller_ranged_value(int p_input_field, float p_v
 
 float SourceAnimPlayer::get_controller_ranged_value(int p_input_field) const {
 	ERR_FAIL_COND_V_MSG(p_input_field < 0 || p_input_field >= MAX_BONE_CONTROLLER_INPUTS, 0.0f, "Bone controller input field is out of range.");
-	const mdlpp::MDL::BoneController *controller = _find_bone_controller(p_input_field);
+	const SourceMDLAnimationData::BoneController *controller = _find_bone_controller(p_input_field);
 	ERR_FAIL_NULL_V_MSG(controller, 0.0f, "Requested bone controller input field was not found in the loaded MDL.");
 	const float encoded = get_controller_value(p_input_field);
 	return ((1.0f - encoded) * controller->start) + (encoded * controller->end);
@@ -1036,7 +1070,7 @@ float SourceAnimPlayer::get_controller_ranged_value(int p_input_field) const {
 
 void SourceAnimPlayer::set_ik_enabled(bool p_enabled) {
 	ik_enabled = p_enabled;
-	if (model != nullptr && sequence_descriptor >= 0) {
+	if (is_open() && sequence_descriptor >= 0) {
 		_apply_pose();
 	}
 }
@@ -1054,11 +1088,11 @@ PackedStringArray SourceAnimPlayer::get_configuration_warnings() const {
 	if (_get_skeleton() == nullptr) {
 		warnings.push_back(RTR("SourceAnimPlayer needs a Skeleton3D target. Set skeleton_path or parent it to a Skeleton3D node."));
 	}
-	if (model == nullptr) {
+	if (!is_open()) {
 		warnings.push_back(RTR("SourceAnimPlayer does not have an MDL model loaded."));
-	} else if (sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size())) {
+	} else if (sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size())) {
 		warnings.push_back(RTR("SourceAnimPlayer does not have a valid sequence selected."));
-	} else if (ik_enabled && !model->mdl.ikChains.empty() && ik_runtime_chains.is_empty()) {
+	} else if (ik_enabled && !animation_data->get_ik_chains().empty() && ik_runtime_chains.is_empty()) {
 		warnings.push_back(RTR("SourceAnimPlayer found MDL IK chains but could not bind them onto the target Skeleton3D."));
 	} else if (model_to_skeleton_bones.is_empty()) {
 		warnings.push_back(RTR("SourceAnimPlayer could not map any MDL bones onto the target Skeleton3D."));
@@ -1085,28 +1119,36 @@ Error SourceAnimPlayer::open(const String &p_mdl_path, const String &p_vtx_path,
 	ERR_FAIL_COND_V_MSG(vtx_error != OK, vtx_error, "Failed to load the VTX companion file.");
 	ERR_FAIL_COND_V_MSG(vvd_error != OK, vvd_error, "Failed to load the VVD companion file.");
 
-	const Error open_error = _open_bytes(mdl_data, vtx_data, vvd_data);
+	Vector<uint8_t> anim_block_data;
+	std::vector<std::byte> mdl_bytes = _to_byte_vector(mdl_data);
+	std::vector<std::byte> vtx_bytes = _to_byte_vector(vtx_data);
+	std::vector<std::byte> vvd_bytes = _to_byte_vector(vvd_data);
+	mdlpp::StudioModel probe_model;
+	if (probe_model.open(mdl_bytes, vtx_bytes, vvd_bytes)) {
+		const String anim_block_path = _resolve_anim_block_path(p_mdl_path, probe_model.mdl);
+		if (!anim_block_path.is_empty()) {
+			Error anim_block_error = OK;
+			anim_block_data = _read_file_bytes(anim_block_path, &anim_block_error);
+			if (anim_block_error != OK) {
+				close();
+				return anim_block_error;
+			}
+		}
+	}
+
+	const Error open_error = _open_bytes(mdl_data, vtx_data, vvd_data, anim_block_data);
 	if (open_error != OK) {
 		close();
 		return open_error;
 	}
 
-	const String anim_block_path = _resolve_anim_block_path(p_mdl_path, model->mdl, resolver, resolver_game_id);
-	if (!anim_block_path.is_empty()) {
-		Error anim_block_error = OK;
-		const Vector<uint8_t> anim_block_data = _read_file_bytes(anim_block_path, &anim_block_error);
-		if (anim_block_error != OK) {
-			close();
-			return anim_block_error;
-		}
-		model->setAnimBlockData(_to_byte_vector(anim_block_data));
-		sampled_animation_cache.clear();
-	}
-
 	mdl_path = p_mdl_path;
 	vtx_path = resolved_vtx_path;
 	vvd_path = resolved_vvd_path;
-	if (!model->mdl.sequenceDescs.empty()) {
+	if (animation_data.is_valid()) {
+		animation_data->set_mdl_path(p_mdl_path);
+	}
+	if (is_open() && !animation_data->get_sequences().empty()) {
 		sequence_descriptor = 0;
 	}
 	_update_skeleton_cache();
@@ -1126,7 +1168,7 @@ Error SourceAnimPlayer::open_from_buffer(const PackedByteArray &p_mdl_data, cons
 		return open_error;
 	}
 
-	if (!model->mdl.sequenceDescs.empty()) {
+	if (is_open() && !animation_data->get_sequences().empty()) {
 		sequence_descriptor = 0;
 	}
 	_update_skeleton_cache();
@@ -1135,10 +1177,12 @@ Error SourceAnimPlayer::open_from_buffer(const PackedByteArray &p_mdl_data, cons
 }
 
 void SourceAnimPlayer::close() {
+	_close_model(true);
+}
+
+void SourceAnimPlayer::_close_model(bool p_clear_animation_data) {
 	stop(false);
 	_clear_ik_runtime();
-	model.reset();
-	sampled_animation_cache.clear();
 	mdl_path = String();
 	vtx_path = String();
 	vvd_path = String();
@@ -1146,20 +1190,24 @@ void SourceAnimPlayer::close() {
 	sequence_descriptor = -1;
 	playback_time = 0.0;
 	model_to_skeleton_bones.clear();
+	skeleton_to_model_bones.clear();
+	if (p_clear_animation_data) {
+		animation_data.unref();
+	}
 	update_configuration_warnings();
 }
 
 int SourceAnimPlayer::get_bone_controller_count() const {
-	return model == nullptr ? 0 : static_cast<int>(model->mdl.boneControllers.size());
+	return animation_data.is_null() ? 0 : static_cast<int>(animation_data->get_bone_controllers().size());
 }
 
 Array SourceAnimPlayer::get_bone_controllers() const {
 	Array out;
-	if (model == nullptr) {
+	if (animation_data.is_null()) {
 		return out;
 	}
-	for (const mdlpp::MDL::BoneController &controller : model->mdl.boneControllers) {
-		Dictionary info = _make_bone_controller_info(model.get(), controller);
+	for (const SourceMDLAnimationData::BoneController &controller : animation_data->get_bone_controllers()) {
+		Dictionary info = _make_bone_controller_info(animation_data.ptr(), controller);
 		if (controller.inputField >= 0 && controller.inputField < controller_values.size()) {
 			const float encoded = controller_values[controller.inputField];
 			info["current_normalized"] = encoded;
@@ -1171,16 +1219,16 @@ Array SourceAnimPlayer::get_bone_controllers() const {
 }
 
 int SourceAnimPlayer::get_sequence_count() const {
-	return model == nullptr ? 0 : static_cast<int>(model->mdl.sequenceDescs.size());
+	return animation_data.is_null() ? 0 : static_cast<int>(animation_data->get_sequences().size());
 }
 
 PackedStringArray SourceAnimPlayer::get_sequence_names() const {
 	PackedStringArray names;
-	if (model == nullptr) {
+	if (animation_data.is_null()) {
 		return names;
 	}
-	for (size_t i = 0; i < model->mdl.sequenceDescs.size(); i++) {
-		const String label = _from_utf8(model->mdl.sequenceDescs[i].label);
+	for (size_t i = 0; i < animation_data->get_sequences().size(); i++) {
+		const String label = animation_data->get_sequences()[i].label;
 		names.push_back(label.is_empty() ? vformat("sequence_%d", static_cast<int>(i)) : label);
 	}
 	return names;
@@ -1191,11 +1239,11 @@ bool SourceAnimPlayer::has_sequence(const StringName &p_name) const {
 }
 
 int SourceAnimPlayer::find_sequence(const StringName &p_name) const {
-	if (model == nullptr) {
+	if (animation_data.is_null()) {
 		return -1;
 	}
-	for (int i = 0; i < static_cast<int>(model->mdl.sequenceDescs.size()); i++) {
-		if (StringName(_from_utf8(model->mdl.sequenceDescs[static_cast<size_t>(i)].label)) == p_name) {
+	for (int i = 0; i < static_cast<int>(animation_data->get_sequences().size()); i++) {
+		if (StringName(animation_data->get_sequences()[static_cast<size_t>(i)].label) == p_name) {
 			return i;
 		}
 	}
@@ -1203,11 +1251,11 @@ int SourceAnimPlayer::find_sequence(const StringName &p_name) const {
 }
 
 Error SourceAnimPlayer::play(double p_from_time) {
-	ERR_FAIL_COND_V_MSG(model == nullptr, ERR_INVALID_PARAMETER, "SourceAnimPlayer must be opened before playback.");
-	if (sequence_descriptor < 0 && !model->mdl.sequenceDescs.empty()) {
+	ERR_FAIL_COND_V_MSG(!is_open(), ERR_INVALID_PARAMETER, "SourceAnimPlayer must be opened before playback.");
+	if (sequence_descriptor < 0 && !animation_data->get_sequences().empty()) {
 		sequence_descriptor = 0;
 	}
-	ERR_FAIL_COND_V_MSG(sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size()), ERR_INVALID_PARAMETER, "SourceAnimPlayer does not have a valid sequence selected.");
+	ERR_FAIL_COND_V_MSG(sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size()), ERR_INVALID_PARAMETER, "SourceAnimPlayer does not have a valid sequence selected.");
 	playing = true;
 	_set_processing_enabled(true);
 	seek(p_from_time, true);
@@ -1231,7 +1279,7 @@ void SourceAnimPlayer::stop(bool p_reset) {
 	playback_time = 0.0;
 	if (p_reset) {
 		_reset_mapped_bone_poses();
-	} else if (model != nullptr && sequence_descriptor >= 0) {
+	} else if (is_open() && sequence_descriptor >= 0) {
 		_apply_pose();
 	}
 }
@@ -1244,7 +1292,7 @@ void SourceAnimPlayer::seek(double p_time, bool p_update) {
 }
 
 void SourceAnimPlayer::advance(double p_delta) {
-	if (model == nullptr || sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(model->mdl.sequenceDescs.size()) || p_delta <= 0.0 || speed_scale <= 0.0f) {
+	if (!is_open() || sequence_descriptor < 0 || sequence_descriptor >= static_cast<int>(animation_data->get_sequences().size()) || p_delta <= 0.0 || speed_scale <= 0.0f) {
 		return;
 	}
 
@@ -1254,7 +1302,7 @@ void SourceAnimPlayer::advance(double p_delta) {
 		return;
 	}
 
-	const mdlpp::MDL::SequenceDesc &sequence_desc_ref = model->mdl.sequenceDescs[static_cast<size_t>(sequence_descriptor)];
+	const SourceMDLAnimationData::SequenceDesc &sequence_desc_ref = animation_data->get_sequences()[static_cast<size_t>(sequence_descriptor)];
 	const double previous_time = playback_time;
 	const double delta = p_delta * static_cast<double>(speed_scale);
 	bool looped = false;
@@ -1279,9 +1327,15 @@ void SourceAnimPlayer::advance(double p_delta) {
 void SourceAnimPlayer::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
+			if (!is_open() && animation_data.is_valid()) {
+				_open_animation_data_resource();
+			}
 			_update_skeleton_cache();
+			if (is_open()) {
+				_rebuild_ik_runtime();
+			}
 			_set_processing_enabled(playing);
-			if (model != nullptr && sequence_descriptor >= 0) {
+			if (is_open() && sequence_descriptor >= 0) {
 				_apply_pose();
 			}
 		} break;
@@ -1297,10 +1351,8 @@ void SourceAnimPlayer::_notification(int p_what) {
 }
 
 void SourceAnimPlayer::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_resolver", "resolver"), &SourceAnimPlayer::set_resolver);
-	ClassDB::bind_method(D_METHOD("get_resolver"), &SourceAnimPlayer::get_resolver);
-	ClassDB::bind_method(D_METHOD("set_resolver_game_id", "game_id"), &SourceAnimPlayer::set_resolver_game_id);
-	ClassDB::bind_method(D_METHOD("get_resolver_game_id"), &SourceAnimPlayer::get_resolver_game_id);
+	ClassDB::bind_method(D_METHOD("set_animation_data", "animation_data"), &SourceAnimPlayer::set_animation_data);
+	ClassDB::bind_method(D_METHOD("get_animation_data"), &SourceAnimPlayer::get_animation_data);
 	ClassDB::bind_method(D_METHOD("open", "mdl_path", "vtx_path", "vvd_path"), &SourceAnimPlayer::open, DEFVAL(String()), DEFVAL(String()));
 	ClassDB::bind_method(D_METHOD("open_from_buffer", "mdl_data", "vtx_data", "vvd_data", "anim_block_data"), &SourceAnimPlayer::open_from_buffer, DEFVAL(PackedByteArray()));
 	ClassDB::bind_method(D_METHOD("close"), &SourceAnimPlayer::close);
@@ -1340,8 +1392,7 @@ void SourceAnimPlayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("advance", "delta"), &SourceAnimPlayer::advance);
 	ClassDB::bind_method(D_METHOD("is_playing"), &SourceAnimPlayer::is_playing);
 
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "resolver", PROPERTY_HINT_RESOURCE_TYPE, "SourcePPResolver"), "set_resolver", "get_resolver");
-	ADD_PROPERTY(PropertyInfo(Variant::STRING, "resolver_game_id"), "set_resolver_game_id", "get_resolver_game_id");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "animation_data", PROPERTY_HINT_RESOURCE_TYPE, "SourceMDLAnimationData"), "set_animation_data", "get_animation_data");
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "skeleton_path", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Skeleton3D"), "set_skeleton_path", "get_skeleton_path");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "sequence_descriptor"), "set_sequence_descriptor", "get_sequence_descriptor");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "blend_values"), "set_blend_values", "get_blend_values");

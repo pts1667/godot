@@ -45,7 +45,7 @@
 			<param index="2" name="include_collision" type="bool" default="true" />
 			<description>
 				Builds a ready-to-instance [Node3D] subtree for the currently loaded model. The returned root contains a [Skeleton3D], a configured [SourceAnimPlayer], and one skinned [MeshInstance3D] per available MDL LOD. These mesh instances are configured with chained visibility ranges so Godot can switch between artist-authored MDL LODs using [GeometryInstance3D]'s visibility-range system.
-				If [param include_attachments] is [code]true[/code], MDL attachments are added as [BoneAttachment3D] children under the generated skeleton. If [param include_collision] is [code]true[/code], the importer first tries to load a companion [code].phy[/code] file and converts its IVPS convex solids into [AnimatableBody3D] followers with [ConvexPolygonShape3D] children, attaching them to the matching skeleton bones when the PHY metadata names a bone. If no usable PHY data is available, it falls back to synthesizing box-shaped collision followers for collision-relevant bones from the visible LOD0 mesh in rest pose. The returned root stores import metadata such as skin family, source paths, material names, sequence names, collision source details, LOD count, and the visibility-range heuristic used for generated LOD transitions.
+				If [param include_attachments] is [code]true[/code], MDL attachments are added as [BoneAttachment3D] children under the generated skeleton. If [param include_collision] is [code]true[/code], the importer first tries to load a companion [code].phy[/code] file and converts its IVPS convex solids into [AnimatableBody3D] followers with [ConvexPolygonShape3D] children, attaching them to the matching skeleton bones when the PHY metadata names a bone. If no usable PHY data is available, it falls back to synthesizing box-shaped collision followers for collision-relevant bones from the visible LOD0 mesh in rest pose. The returned root stores import metadata such as skin family, source paths, material names, sequence names, the baked [SourceMDLAnimationData] resource under [code]sourcepp_animation_data[/code], collision source details, LOD count, and the visibility-range heuristic used for generated LOD transitions.
 			</description>
 		</method>
 		<method name="create_skin">
@@ -157,6 +157,12 @@
 			<param index="0" name="hitbox_set" type="int" default="0" />
 			<description>
 				Returns the hitboxes for the requested set as dictionaries. Each dictionary contains [code]name[/code], [code]bone[/code], [code]bone_name[/code], [code]group[/code], [code]min[/code], and [code]max[/code].
+			</description>
+		</method>
+		<method name="get_included_model_paths">
+			<return type="PackedStringArray" />
+			<description>
+				Returns recursively resolved MDL files referenced by the parsed include-model table. These are usually animation library MDLs used when baking [SourceMDLAnimationData].
 			</description>
 		</method>
 		<method name="get_lod_count">
@@ -294,6 +300,9 @@
 		</member>
 		<member name="hitbox_set_count" type="int" getter="get_hitbox_set_count" default="0">
 			The number of parsed hitbox sets.
+		</member>
+		<member name="included_model_paths" type="PackedStringArray" getter="get_included_model_paths" default="PackedStringArray()">
+			Recursively resolved included MDL paths.
 		</member>
 		<member name="lod_count" type="int" getter="get_lod_count" default="0">
 			The number of available LODs.

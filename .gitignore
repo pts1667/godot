@@ -226,6 +226,9 @@ xcuserdata/
 # Zed
 .zed/
 
+# AGENTS.md
+AGENTS.md
+
 ##############################
 ### Visual Studio specific ###
 ##############################

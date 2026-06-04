@@ -77,7 +77,8 @@ bool MDL::open(const std::byte* data, std::size_t size) {
 	const auto ikAutoplayLockOffset = stream.read<int32_t>();
 	stream.skip<float>();
 	stream.skip<int32_t>();
-	stream.skip<int32_t>(2);
+	const auto includeModelCount = stream.read<int32_t>();
+	const auto includeModelIndex = stream.read<int32_t>();
 	stream.skip<int32_t>();
 	const auto animBlockNameIndex = stream.read<int32_t>();
 	const auto animBlockCount = stream.read<int32_t>();
@@ -94,6 +95,17 @@ bool MDL::open(const std::byte* data, std::size_t size) {
 		for (int i = 0; i < animBlockCount; i++) {
 			auto &animBlock = this->animBlocks.emplace_back();
 			stream.read(animBlock.dataStart).read(animBlock.dataEnd);
+		}
+	}
+
+	if (includeModelCount > 0 && includeModelIndex > 0) {
+		stream.seek_u(includeModelIndex);
+		for (int i = 0; i < includeModelCount; i++) {
+			const auto includeModelPos = stream.tell();
+			auto &includeModel = this->includeModels.emplace_back();
+			parser::binary::readStringAtOffset(stream, includeModel.label);
+			parser::binary::readStringAtOffset(stream, includeModel.name, std::ios::cur, sizeof(int32_t) * 2);
+			stream.seek_u(includeModelPos + sizeof(int32_t) * 2);
 		}
 	}
 
@@ -185,8 +197,10 @@ bool MDL::open(const std::byte* data, std::size_t size) {
 			stream
 				.read(animDesc.animBlock)
 				.read(animDesc.animIndex);
-			stream.read(animDesc.ikRuleCount);
-			stream.skip<int32_t>(2);
+			stream
+				.read(animDesc.ikRuleCount)
+				.read(animDesc.ikRuleIndex)
+				.read(animDesc.animBlockIKRuleIndex);
 			stream.read(animDesc.localHierarchyCount);
 			stream.read(animDesc.localHierarchyIndex);
 			stream.read(animDesc.sectionIndex);

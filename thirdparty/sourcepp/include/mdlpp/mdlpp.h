@@ -61,10 +61,16 @@ struct StudioModel {
 							const std::vector<unsigned char>& vtxData,
 							const std::vector<unsigned char>& vvdData);
 
+	[[nodiscard]] bool openMDLOnly(const std::byte* mdlData, std::size_t mdlSize);
+	[[nodiscard]] bool openMDLOnly(const unsigned char* mdlData, std::size_t mdlSize);
+	[[nodiscard]] bool openMDLOnly(const std::vector<std::byte>& mdlData);
+	[[nodiscard]] bool openMDLOnly(const std::vector<unsigned char>& mdlData);
+
 	[[nodiscard]] explicit operator bool() const;
 
 	[[nodiscard]] BakedModel processModelData(int currentLOD = ROOT_LOD) const;
 	[[nodiscard]] bool sampleAnimation(int animDescIndex, SampledAnimation& out) const;
+	[[nodiscard]] std::vector<MDL::IKRule> getAnimationIKRules(int animDescIndex) const;
 	[[nodiscard]] const std::vector<std::byte> &getMDLData() const { return this->mdlData; }
 	[[nodiscard]] const std::vector<std::byte> &getAnimBlockData() const { return this->animBlockData; }
 	void setAnimBlockData(const std::vector<std::byte> &p_anim_block_data) { this->animBlockData = p_anim_block_data; }

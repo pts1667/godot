@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SourceMDLAnimationData" inherits="Resource" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Serialized Source MDL animation data used by SourceAnimPlayer.
+	</brief_description>
+	<description>
+		Stores the parsed animation information needed by [SourceAnimPlayer], including Source bone names, bone controllers, sequence metadata, IK metadata, and sampled animation tracks. Imported MDL scenes embed this resource so animation playback can work after scene reload without storing the original MDL, VTX, or VVD files.
+		The data is intentionally exposed as editable Godot arrays and dictionaries so tools and game scripts can inspect, patch, replace, or augment imported Source animations. A script-based reference player is available at [code]modules/sourcepp/scripts/source_script_anim_player.gd[/code] for projects that want to customize playback behavior outside the native [SourceAnimPlayer]. Script-side IK lifecycle helpers are available at [code]modules/sourcepp/scripts/source_ik_data.gd[/code], [code]source_ik_lock.gd[/code], and [code]source_ik_rule.gd[/code].
+		The script player also creates an [code]AnimBehaviours[/code] node under the imported MDL root. That node owns editable behavior [Resource] instances from [code]source_anim_behaviours.gd[/code], including default IK behavior resources for Source [code]IK_SELF[/code], [code]IK_WORLD[/code], [code]IK_GROUND[/code], [code]IK_RELEASE[/code], [code]IK_ATTACHMENT[/code], and [code]IK_UNLATCH[/code]. The same resource container is intended to host animation event behavior resources later.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="find_animation_data_index" qualifiers="const">
+			<return type="int" />
+			<param index="0" name="animation_index" type="int" />
+			<description>
+				Returns the array index in [member animations_data] for the baked animation with the requested Source animation index, or [code]-1[/code] if it is not present.
+			</description>
+		</method>
+		<method name="find_sequence" qualifiers="const">
+			<return type="int" />
+			<param index="0" name="name" type="StringName" />
+			<description>
+				Returns the index of the first sequence whose [code]label[/code] matches [param name], or [code]-1[/code] if no sequence matches.
+			</description>
+		</method>
+		<method name="get_animation" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns one entry from [member animations_data]. The dictionary contains [code]animation_index[/code], [code]fps[/code], [code]frame_count[/code], [code]flags[/code], [code]ik_rules[/code], and [code]tracks[/code]. Each IK rule contains Source timing, target, chain, slot, attachment, and ground/contact metadata. Each track contains [code]positions[/code] as a [PackedVector3Array] and [code]rotations[/code] as an [Array] of [Quaternion] values.
+			</description>
+		</method>
+		<method name="get_animation_by_index" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="animation_index" type="int" />
+			<description>
+				Returns the baked animation dictionary with the requested Source animation index, or an empty dictionary if it is not present.
+			</description>
+		</method>
+		<method name="get_animation_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the number of baked sampled animations.
+			</description>
+		</method>
+		<method name="get_bone_controller" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns one Source bone controller dictionary from [member bone_controllers_data]. The dictionary contains [code]bone[/code], [code]type[/code], [code]start[/code], [code]end[/code], [code]rest[/code], and [code]input_field[/code].
+			</description>
+		</method>
+		<method name="get_bone_controller_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the number of Source bone controller definitions.
+			</description>
+		</method>
+		<method name="get_bone_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the number of Source bones referenced by the animation tracks.
+			</description>
+		</method>
+		<method name="get_ik_autoplay_locks" qualifiers="const">
+			<return type="Array" />
+			<description>
+				Returns IK locks applied by autoplay sequences. Each lock dictionary contains [code]chain[/code], [code]position_weight[/code], [code]local_quaternion_weight[/code], and [code]flags[/code].
+			</description>
+		</method>
+		<method name="get_ik_chain" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns one IK chain dictionary from [member ik_chains_data]. The dictionary contains [code]name[/code], [code]link_type[/code], and [code]links[/code]. Each link contains [code]bone[/code] and [code]knee_dir[/code].
+			</description>
+		</method>
+		<method name="get_ik_chain_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the number of Source IK chain definitions.
+			</description>
+		</method>
+		<method name="get_sequence" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns one sequence dictionary from [member sequences_data]. The dictionary contains [code]label[/code], [code]flags[/code], [code]group_size[/code], [code]param_index[/code], [code]param_start[/code], [code]param_end[/code], [code]animation_indices[/code], [code]ik_rules[/code], [code]events[/code], [code]auto_layers[/code], [code]bone_weights[/code], [code]pose_keys[/code], and [code]ik_locks[/code]. Sequence IK rules are flattened from referenced animation descriptors and annotated with [code]animation[/code] and [code]blend_cell[/code].
+			</description>
+		</method>
+		<method name="get_sequence_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the number of merged sequence descriptors, including sequences baked from included animation MDLs.
+			</description>
+		</method>
+		<method name="get_sequence_names" qualifiers="const">
+			<return type="PackedStringArray" />
+			<description>
+				Returns sequence labels in sequence-index order.
+			</description>
+		</method>
+		<method name="get_summary" qualifiers="const">
+			<return type="Dictionary" />
+			<description>
+				Returns a compact dictionary with source paths, data counts, and [code]has_required_data[/code]. This is useful for debug panels and import validation scripts.
+			</description>
+		</method>
+		<method name="get_track" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="animation_index" type="int" />
+			<param index="1" name="bone" type="int" />
+			<description>
+				Returns the sampled position and rotation arrays for [param bone] in the baked animation identified by [param animation_index], or an empty dictionary if the animation is missing.
+			</description>
+		</method>
+		<method name="has_required_data" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns whether the resource contains bone names, sequence metadata, and sampled animation tracks.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="anim_block_path" type="String" setter="set_anim_block_path" getter="get_anim_block_path" default="&quot;&quot;">
+			Source path for the optional external animation block, when known.
+		</member>
+		<member name="animations_data" type="Array" setter="set_animations_data" getter="get_animations_data">
+			Serialized sampled animation tracks.
+		</member>
+		<member name="bone_controllers_data" type="Array" setter="set_bone_controllers_data" getter="get_bone_controllers_data">
+			Serialized Source bone controller definitions.
+		</member>
+		<member name="bone_names" type="PackedStringArray" setter="set_bone_names" getter="get_bone_names">
+			Source bone names, used to map animation track indices onto the imported [Skeleton3D].
+		</member>
+		<member name="ik_autoplay_locks_data" type="Array" setter="set_ik_autoplay_locks_data" getter="get_ik_autoplay_locks_data">
+			Serialized IK locks applied by autoplay sequences.
+		</member>
+		<member name="ik_chains_data" type="Array" setter="set_ik_chains_data" getter="get_ik_chains_data">
+			Serialized Source IK chain definitions.
+		</member>
+		<member name="mdl_path" type="String" setter="set_mdl_path" getter="get_mdl_path" default="&quot;&quot;">
+			Source path for the imported MDL.
+		</member>
+		<member name="sequences_data" type="Array" setter="set_sequences_data" getter="get_sequences_data">
+			Serialized Source sequence descriptors, events, blend grids, autolayers, bone weights, and IK locks.
+		</member>
+	</members>
+</class>

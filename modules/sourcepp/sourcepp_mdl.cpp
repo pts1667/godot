@@ -9,6 +9,7 @@
 #include "sourcepp_mdl.h"
 
 #include "source_anim_player.h"
+#include "source_mdl_animation_data.h"
 #include "sourcepp_import_cache.h"
 #include "sourcepp_resolver.h"
 #include "sourcepp_vmt.h"
@@ -397,6 +398,43 @@ Vector<CollisionBodySpec> _build_generated_collision_boxes(const mdlpp::StudioMo
 	return specs;
 }
 
+Vector<CollisionBodySpec> _build_hitbox_collision_boxes(const mdlpp::StudioModel *p_model, int p_hitbox_set = 0) {
+	Vector<CollisionBodySpec> specs;
+	if (p_model == nullptr || p_hitbox_set < 0 || p_hitbox_set >= static_cast<int>(p_model->mdl.hitboxSets.size())) {
+		return specs;
+	}
+
+	const mdlpp::MDL::HitboxSet &hitbox_set = p_model->mdl.hitboxSets[static_cast<size_t>(p_hitbox_set)];
+	for (int hitbox_index = 0; hitbox_index < static_cast<int>(hitbox_set.hitboxes.size()); hitbox_index++) {
+		const mdlpp::BBox &hitbox = hitbox_set.hitboxes[static_cast<size_t>(hitbox_index)];
+		if (hitbox.bone < 0 || hitbox.bone >= static_cast<int>(p_model->mdl.bones.size())) {
+			continue;
+		}
+
+		const Vector3 min = SourcePPUtils::source_vector_to_vector3(hitbox.bboxMin);
+		const Vector3 max = SourcePPUtils::source_vector_to_vector3(hitbox.bboxMax);
+		const Vector3 raw_size = max - min;
+		const Vector3 box_size(
+				MAX(Math::abs(raw_size.x), 0.05f),
+				MAX(Math::abs(raw_size.y), 0.05f),
+				MAX(Math::abs(raw_size.z), 0.05f));
+
+		CollisionBodySpec body_spec;
+		body_spec.bone = hitbox.bone;
+		body_spec.bone_name = _get_bone_track_name(p_model, hitbox.bone);
+		body_spec.name = hitbox.name.empty() ? vformat("Hitbox_%s_%d", body_spec.bone_name, hitbox_index) : String::utf8(hitbox.name.c_str());
+		body_spec.source = "hitbox";
+		body_spec.transform.origin = (min + max) * 0.5f;
+
+		CollisionShapeSpec shape_spec;
+		shape_spec.size = box_size;
+		body_spec.shapes.push_back(shape_spec);
+		specs.push_back(body_spec);
+	}
+
+	return specs;
+}
+
 int _append_collision_bodies(Node3D *p_root, Skeleton3D *p_skeleton, const Vector<CollisionBodySpec> &p_specs) {
 	if (p_root == nullptr || p_skeleton == nullptr) {
 		return 0;
@@ -499,6 +537,38 @@ String SourcePPMDL::_resolve_companion_path(const String &p_model_path, const Pa
 			return candidate;
 		}
 	}
+	return String();
+}
+
+String SourcePPMDL::_resolve_include_model_path(const String &p_owner_model_path, const std::string &p_include_name) const {
+	String include_path = SourcePPUtils::normalize_source_path(String::utf8(p_include_name.c_str()));
+	if (include_path.is_empty()) {
+		return String();
+	}
+	if (!include_path.to_lower().ends_with(".mdl")) {
+		include_path += ".mdl";
+	}
+
+	Vector<String> candidates;
+	_append_unique_candidate(candidates, include_path);
+
+	const String owner_dir = p_owner_model_path.get_base_dir();
+	if (!owner_dir.is_empty()) {
+		_append_unique_candidate(candidates, owner_dir.path_join(include_path.get_file()));
+		_append_unique_candidate(candidates, owner_dir.path_join(include_path));
+	}
+
+	if (!include_path.begins_with("models/")) {
+		_append_unique_candidate(candidates, String("models").path_join(include_path));
+		_append_unique_candidate(candidates, String("models").path_join(include_path.get_file()));
+	}
+
+	for (int i = 0; i < candidates.size(); i++) {
+		if (SourcePPUtils::path_exists_with_resolver(candidates[i], resolver, resolver_game_id)) {
+			return candidates[i];
+		}
+	}
+
 	return String();
 }
 
@@ -648,6 +718,63 @@ Error SourcePPMDL::_open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<u
 	return OK;
 }
 
+Error SourcePPMDL::_load_included_models_recursive(const String &p_model_path, const mdlpp::StudioModel &p_source_model, std::unordered_set<std::string> &r_seen_paths, int p_depth) {
+	static constexpr int MAX_INCLUDE_DEPTH = 32;
+	if (p_depth >= MAX_INCLUDE_DEPTH) {
+		return ERR_CYCLIC_LINK;
+	}
+
+	for (const mdlpp::MDL::IncludeModel &include_model : p_source_model.mdl.includeModels) {
+		const String include_path = _resolve_include_model_path(p_model_path, include_model.name);
+		if (include_path.is_empty()) {
+			WARN_PRINT(vformat("Could not resolve included MDL '%s' referenced by '%s'.", String::utf8(include_model.name.c_str()), p_model_path));
+			continue;
+		}
+
+		const String normalized_path = SourcePPUtils::normalize_source_path(include_path);
+		const std::string key = _to_utf8(normalized_path.to_lower());
+		if (r_seen_paths.contains(key)) {
+			continue;
+		}
+		r_seen_paths.insert(key);
+
+		Error mdl_error = OK;
+		const Vector<uint8_t> mdl_data = _read_file_bytes(normalized_path, &mdl_error);
+		if (mdl_error != OK) {
+			WARN_PRINT(vformat("Could not read included MDL '%s'.", normalized_path));
+			continue;
+		}
+
+		auto included_model = std::make_unique<mdlpp::StudioModel>();
+		if (!included_model->openMDLOnly(_to_byte_vector(mdl_data))) {
+			WARN_PRINT(vformat("Could not parse included MDL '%s'.", normalized_path));
+			continue;
+		}
+
+		const String anim_block_path = _resolve_anim_block_path(normalized_path, included_model->mdl, resolver, resolver_game_id);
+		if (!anim_block_path.is_empty()) {
+			Error anim_block_error = OK;
+			const Vector<uint8_t> anim_block_data = _read_file_bytes(anim_block_path, &anim_block_error);
+			if (anim_block_error == OK) {
+				included_model->setAnimBlockData(_to_byte_vector(anim_block_data));
+			} else {
+				WARN_PRINT(vformat("Could not read included MDL animation block '%s'.", anim_block_path));
+			}
+		}
+
+		mdlpp::StudioModel *included_model_ptr = included_model.get();
+		included_models.push_back(std::move(included_model));
+		included_model_paths.push_back(normalized_path);
+
+		const Error recurse_error = _load_included_models_recursive(normalized_path, *included_model_ptr, r_seen_paths, p_depth + 1);
+		if (recurse_error != OK) {
+			return recurse_error;
+		}
+	}
+
+	return OK;
+}
+
 Error SourcePPMDL::_get_baked_model(int p_lod, mdlpp::BakedModel &r_baked_model) const {
 	ERR_FAIL_COND_V_MSG(get_model() == nullptr, ERR_INVALID_PARAMETER, "SourcePPMDL must be opened before use.");
 	ERR_FAIL_COND_V_MSG(p_lod < 0 || p_lod >= get_model()->vtx.numLODs, ERR_INVALID_PARAMETER, "Requested LOD is out of range.");
@@ -695,6 +822,14 @@ Error SourcePPMDL::open(const String &p_mdl_path, const String &p_vtx_path, cons
 		anim_block_data_cache.clear();
 	}
 
+	std::unordered_set<std::string> seen_include_paths;
+	seen_include_paths.insert(_to_utf8(SourcePPUtils::normalize_source_path(p_mdl_path).to_lower()));
+	const Error include_error = _load_included_models_recursive(p_mdl_path, *model, seen_include_paths, 0);
+	if (include_error != OK) {
+		close();
+		return include_error;
+	}
+
 	mdl_data_cache = mdl_data;
 	vtx_data_cache = vtx_data;
 	vvd_data_cache = vvd_data;
@@ -725,6 +860,8 @@ Error SourcePPMDL::open_from_buffer(const PackedByteArray &p_mdl_data, const Pac
 
 void SourcePPMDL::close() {
 	model.reset();
+	included_models.clear();
+	included_model_paths.clear();
 	mdl_path = String();
 	vtx_path = String();
 	vvd_path = String();
@@ -1328,16 +1465,29 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 
 	SourceAnimPlayer *anim_player = memnew(SourceAnimPlayer);
 	anim_player->set_name("SourceAnimPlayer");
-	anim_player->set_resolver(resolver);
-	anim_player->set_resolver_game_id(resolver_game_id);
 	anim_player->set("skeleton_path", NodePath("../Skeleton3D"));
-	const Error anim_open_error = anim_player->open_from_buffer(_to_packed_byte_array(mdl_data_cache), _to_packed_byte_array(vtx_data_cache), _to_packed_byte_array(vvd_data_cache), _to_packed_byte_array(anim_block_data_cache));
-	if (anim_open_error != OK) {
+	Ref<SourceMDLAnimationData> animation_data;
+	animation_data.instantiate();
+	animation_data->set_mdl_path(mdl_path);
+	std::vector<const mdlpp::StudioModel *> included_model_ptrs;
+	included_model_ptrs.reserve(included_models.size());
+	for (const std::unique_ptr<mdlpp::StudioModel> &included_model : included_models) {
+		included_model_ptrs.push_back(included_model.get());
+	}
+	const Error animation_bake_error = animation_data->bake_from_studio_models(*get_model(), included_model_ptrs);
+	if (animation_bake_error != OK) {
+		memdelete(anim_player);
+		memdelete(skeleton);
+		ERR_FAIL_V_MSG(nullptr, "Failed to bake Source animation data for the imported model.");
+	}
+	anim_player->set_animation_data(animation_data);
+	if (!anim_player->is_open()) {
 		memdelete(anim_player);
 		memdelete(skeleton);
 		ERR_FAIL_V_MSG(nullptr, "Failed to initialize SourceAnimPlayer for the imported model.");
 	}
 	anim_player->set("sequence_descriptor", -1);
+	skeleton->reset_bone_poses();
 
 	Node3D *root = memnew(Node3D);
 	root->set_name(_build_scene_name(get_name(), mdl_path));
@@ -1450,11 +1600,16 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 
 	if (p_include_collision) {
 		Vector<CollisionBodySpec> collision_specs;
-		mdlpp::BakedModel baked_model;
-		if (_get_baked_model(0, baked_model) == OK) {
-			collision_specs = _build_generated_collision_boxes(get_model(), baked_model);
-			if (!collision_specs.is_empty()) {
-				collision_source = "generated_bounds";
+		collision_specs = _build_hitbox_collision_boxes(get_model());
+		if (!collision_specs.is_empty()) {
+			collision_source = "hitbox";
+		} else {
+			mdlpp::BakedModel baked_model;
+			if (_get_baked_model(0, baked_model) == OK) {
+				collision_specs = _build_generated_collision_boxes(get_model(), baked_model);
+				if (!collision_specs.is_empty()) {
+					collision_source = "generated_bounds";
+				}
 			}
 		}
 
@@ -1473,9 +1628,11 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 	root->set_meta("sourcepp_mdl_path", mdl_path);
 	root->set_meta("sourcepp_vtx_path", vtx_path);
 	root->set_meta("sourcepp_vvd_path", vvd_path);
+	root->set_meta("sourcepp_included_mdl_paths", included_model_paths);
 	root->set_meta("sourcepp_phy_path", phy_collision_path);
 	root->set_meta("sourcepp_materials", get_materials());
 	root->set_meta("sourcepp_sequences", anim_player->get_sequence_names());
+	root->set_meta("sourcepp_animation_data", animation_data);
 	root->set_meta("sourcepp_collision_source", collision_source);
 	root->set_meta("sourcepp_collision_body_count", collision_body_count);
 	root->set_meta("sourcepp_collision_shape_count", collision_shape_count);
@@ -1495,6 +1652,7 @@ void SourcePPMDL::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_name"), &SourcePPMDL::get_name);
 	ClassDB::bind_method(D_METHOD("get_version"), &SourcePPMDL::get_version);
 	ClassDB::bind_method(D_METHOD("get_checksum"), &SourcePPMDL::get_checksum);
+	ClassDB::bind_method(D_METHOD("get_included_model_paths"), &SourcePPMDL::get_included_model_paths);
 	ClassDB::bind_method(D_METHOD("get_lod_count"), &SourcePPMDL::get_lod_count);
 	ClassDB::bind_method(D_METHOD("get_mdl_path"), &SourcePPMDL::get_mdl_path);
 	ClassDB::bind_method(D_METHOD("get_vtx_path"), &SourcePPMDL::get_vtx_path);
@@ -1536,6 +1694,7 @@ void SourcePPMDL::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "bone_controller_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_bone_controller_count");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "checksum", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_checksum");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "hitbox_set_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_hitbox_set_count");
+	ADD_PROPERTY(PropertyInfo(Variant::PACKED_STRING_ARRAY, "included_model_paths", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_included_model_paths");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "lod_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_lod_count");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "mdl_path", PROPERTY_HINT_FILE, "*.mdl", PROPERTY_USAGE_READ_ONLY), "", "get_mdl_path");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "name", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY), "", "get_name");

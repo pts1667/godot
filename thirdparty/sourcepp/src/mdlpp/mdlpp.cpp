@@ -45,6 +45,37 @@ struct RawCompressedIKError {
 };
 static_assert(std::is_trivially_copyable_v<RawCompressedIKError>);
 
+struct RawIKRule {
+	int32_t index;
+	int32_t type;
+	int32_t chain;
+	int32_t bone;
+	int32_t slot;
+	float height;
+	float radius;
+	float floor;
+	sourcepp::math::Vec3f position;
+	sourcepp::math::Quat rotation;
+	int32_t compressedIKErrorIndex;
+	int32_t unused2;
+	int32_t startFrame;
+	int32_t ikErrorIndex;
+	float start;
+	float peak;
+	float tail;
+	float end;
+	float unused3;
+	float contact;
+	float drop;
+	float top;
+	int32_t unused6;
+	int32_t unused7;
+	int32_t unused8;
+	int32_t attachmentIndex;
+	int32_t unused[7];
+};
+static_assert(std::is_trivially_copyable_v<RawIKRule>);
+
 struct RawLocalHierarchy {
 	int32_t bone;
 	int32_t newParent;
@@ -362,6 +393,79 @@ void _apply_local_hierarchy(const mdlpp::StudioModel &p_model, const mdlpp::MDL:
 	return &p_model.mdl.animDescs[static_cast<size_t>(p_anim_desc_index)];
 }
 
+[[nodiscard]] mdlpp::MDL::IKRule _decode_ik_rule(BufferStreamReadOnly &p_stream, uint64_t p_rule_offset) {
+	const RawIKRule raw = p_stream.at<RawIKRule>(static_cast<int64_t>(p_rule_offset));
+	mdlpp::MDL::IKRule rule;
+	rule.index = raw.index;
+	rule.type = raw.type;
+	rule.chain = raw.chain;
+	rule.bone = raw.bone;
+	rule.slot = raw.slot;
+	rule.height = raw.height;
+	rule.radius = raw.radius;
+	rule.floor = raw.floor;
+	rule.position = raw.position;
+	rule.rotation = raw.rotation;
+	rule.compressedIKErrorIndex = raw.compressedIKErrorIndex;
+	rule.startFrame = raw.startFrame;
+	rule.ikErrorIndex = raw.ikErrorIndex;
+	rule.start = raw.start;
+	rule.peak = raw.peak;
+	rule.tail = raw.tail;
+	rule.end = raw.end;
+	rule.contact = raw.contact;
+	rule.drop = raw.drop;
+	rule.top = raw.top;
+	if (raw.attachmentIndex > 0) {
+		rule.attachment = p_stream.at_string_u(p_rule_offset + static_cast<uint64_t>(raw.attachmentIndex));
+	}
+	return rule;
+}
+
+[[nodiscard]] bool _resolve_ik_rule_stream(const mdlpp::StudioModel &p_model, const mdlpp::MDL::AnimDesc &p_anim_desc, const std::byte *&r_data, std::size_t &r_size, uint64_t &r_offset) {
+	r_data = nullptr;
+	r_size = 0;
+	r_offset = 0;
+
+	if (p_anim_desc.ikRuleCount <= 0) {
+		return false;
+	}
+
+	if (p_anim_desc.ikRuleIndex > 0) {
+		r_data = p_model.getMDLData().data();
+		r_size = p_model.getMDLData().size();
+		r_offset = p_anim_desc.fileOffset + static_cast<uint64_t>(p_anim_desc.ikRuleIndex);
+		return r_data != nullptr && r_offset < r_size;
+	}
+
+	if (p_anim_desc.animBlockIKRuleIndex <= 0) {
+		return false;
+	}
+
+	const auto &anim_block_data = p_model.getAnimBlockData();
+	if (anim_block_data.empty()) {
+		return false;
+	}
+
+	uint64_t rule_offset = static_cast<uint64_t>(p_anim_desc.animBlockIKRuleIndex);
+	if (p_anim_desc.animBlock > 0 && p_anim_desc.animBlock < static_cast<int32_t>(p_model.mdl.animBlocks.size())) {
+		const auto &anim_block = p_model.mdl.animBlocks[static_cast<size_t>(p_anim_desc.animBlock)];
+		rule_offset += static_cast<uint64_t>(anim_block.dataStart);
+		if (rule_offset >= static_cast<uint64_t>(anim_block.dataEnd)) {
+			return false;
+		}
+	}
+
+	if (rule_offset >= anim_block_data.size()) {
+		return false;
+	}
+
+	r_data = anim_block_data.data();
+	r_size = anim_block_data.size();
+	r_offset = rule_offset;
+	return true;
+}
+
 [[nodiscard]] bool _resolve_anim_stream(const mdlpp::StudioModel &p_model, const mdlpp::MDL::AnimDesc &p_anim_desc, int p_frame, ResolvedAnimStream &r_stream) {
 	int32_t block = p_anim_desc.animBlock;
 	int32_t index = p_anim_desc.animIndex;
@@ -464,6 +568,31 @@ bool StudioModel::open(const std::vector<unsigned char>& mdlData,
 	return this->open(mdlData.data(), mdlData.size(),
 	                  vtxData.data(), vtxData.size(),
 	                  vvdData.data(), vvdData.size());
+}
+
+bool StudioModel::openMDLOnly(const std::byte* mdlData, std::size_t mdlSize) {
+	if (this->opened || !mdlData || !mdlSize) {
+		return false;
+	}
+	if (!this->mdl.open(mdlData, mdlSize)) {
+		return false;
+	}
+	this->mdlData.assign(mdlData, mdlData + mdlSize);
+	this->animBlockData.clear();
+	this->opened = true;
+	return true;
+}
+
+bool StudioModel::openMDLOnly(const unsigned char* mdlData, std::size_t mdlSize) {
+	return this->openMDLOnly(reinterpret_cast<const std::byte*>(mdlData), mdlSize);
+}
+
+bool StudioModel::openMDLOnly(const std::vector<std::byte>& mdlData) {
+	return this->openMDLOnly(mdlData.data(), mdlData.size());
+}
+
+bool StudioModel::openMDLOnly(const std::vector<unsigned char>& mdlData) {
+	return this->openMDLOnly(mdlData.data(), mdlData.size());
 }
 
 StudioModel::operator bool() const {
@@ -699,4 +828,30 @@ bool StudioModel::sampleAnimation(int animDescIndex, SampledAnimation& out) cons
 	}
 
 	return true;
+}
+
+std::vector<MDL::IKRule> StudioModel::getAnimationIKRules(int animDescIndex) const {
+	const MDL::AnimDesc *anim_desc = _get_anim_desc(*this, animDescIndex);
+	if (!this->opened || anim_desc == nullptr || anim_desc->ikRuleCount <= 0 || this->mdlData.empty()) {
+		return {};
+	}
+
+	const std::byte *rule_data = nullptr;
+	std::size_t rule_size = 0;
+	uint64_t rule_offset = 0;
+	if (!_resolve_ik_rule_stream(*this, *anim_desc, rule_data, rule_size, rule_offset)) {
+		return {};
+	}
+
+	BufferStreamReadOnly stream{rule_data, rule_size};
+	std::vector<MDL::IKRule> rules;
+	rules.reserve(static_cast<size_t>(anim_desc->ikRuleCount));
+	for (int rule_index = 0; rule_index < anim_desc->ikRuleCount; rule_index++) {
+		const uint64_t entry_offset = rule_offset + static_cast<uint64_t>(rule_index) * sizeof(RawIKRule);
+		if (entry_offset + sizeof(RawIKRule) > rule_size) {
+			break;
+		}
+		rules.push_back(_decode_ik_rule(stream, entry_offset));
+	}
+	return rules;
 }

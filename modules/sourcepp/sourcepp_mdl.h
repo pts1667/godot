@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace mdlpp {
@@ -36,6 +37,8 @@ class SourcePPMDL : public RefCounted {
 	GDCLASS(SourcePPMDL, RefCounted);
 
 	std::unique_ptr<mdlpp::StudioModel> model;
+	std::vector<std::unique_ptr<mdlpp::StudioModel>> included_models;
+	PackedStringArray included_model_paths;
 	Ref<SourcePPResolver> resolver;
 	String resolver_game_id;
 	String mdl_path;
@@ -53,11 +56,13 @@ class SourcePPMDL : public RefCounted {
 	static PackedByteArray _to_packed_byte_array(const Vector<uint8_t> &p_data);
 	static std::vector<std::byte> _to_byte_vector(const Vector<uint8_t> &p_data);
 	String _resolve_companion_path(const String &p_model_path, const PackedStringArray &p_candidates) const;
+	String _resolve_include_model_path(const String &p_owner_model_path, const std::string &p_include_name) const;
 	String _resolve_material_path(const String &p_material_name) const;
 	Ref<Material> _create_import_material(int p_material_index, int p_skin_family, SourcePPImportCache *p_import_cache, HashMap<String, Ref<Material>> *r_material_cache) const;
 	Vector<uint8_t> _read_file_bytes(const String &p_path, Error *r_error) const;
 
 	Error _open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<uint8_t> &p_vtx_data, const Vector<uint8_t> &p_vvd_data, const Vector<uint8_t> &p_anim_block_data = Vector<uint8_t>());
+	Error _load_included_models_recursive(const String &p_model_path, const mdlpp::StudioModel &p_source_model, std::unordered_set<std::string> &r_seen_paths, int p_depth);
 	Error _get_baked_model(int p_lod, mdlpp::BakedModel &r_baked_model) const;
 
 	mdlpp::StudioModel *get_model() { return model.get(); }
@@ -84,6 +89,7 @@ public:
 	String get_mdl_path() const { return mdl_path; }
 	String get_vtx_path() const { return vtx_path; }
 	String get_vvd_path() const { return vvd_path; }
+	PackedStringArray get_included_model_paths() const { return included_model_paths; }
 
 	PackedStringArray get_materials() const;
 	PackedStringArray get_material_directories() const;

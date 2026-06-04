@@ -112,8 +112,10 @@ struct AnimDesc {
 	//int32_t ikRuleCount;
 	//int32_t ikRuleIndex;
 	int32_t ikRuleCount;
+	int32_t ikRuleIndex;
 
 	//int32_t animBlockIKRuleIndex;
+	int32_t animBlockIKRuleIndex;
 
 	//int32_t localHierarchyIndexCount;
 	//int32_t localHierarchyIndex;
@@ -136,6 +138,14 @@ SOURCEPP_BITFLAGS_ENUM(AnimDesc::Flags)
 struct AnimBlock {
 	int32_t dataStart;
 	int32_t dataEnd;
+};
+
+struct IncludeModel {
+	//int32_t labelIndex;
+	std::string label;
+
+	//int32_t nameIndex;
+	std::string name;
 };
 
 struct Event {
@@ -176,6 +186,30 @@ struct IKLock {
 	float positionWeight;
 	float localQuaternionWeight;
 	int32_t flags;
+};
+
+struct IKRule {
+	int32_t index = -1;
+	int32_t type = 0;
+	int32_t chain = -1;
+	int32_t bone = -1;
+	int32_t slot = -1;
+	float height = 0.0f;
+	float radius = 0.0f;
+	float floor = 0.0f;
+	sourcepp::math::Vec3f position{};
+	sourcepp::math::Quat rotation{};
+	int32_t compressedIKErrorIndex = 0;
+	int32_t startFrame = 0;
+	int32_t ikErrorIndex = 0;
+	float start = 0.0f;
+	float peak = 0.0f;
+	float tail = 0.0f;
+	float end = 0.0f;
+	float contact = 0.0f;
+	float drop = 0.0f;
+	float top = 0.0f;
+	std::string attachment;
 };
 
 struct SequenceDesc {
@@ -462,6 +496,7 @@ struct MDL {
 
 	//int32_t includeModelCount;
 	//int32_t includeModelIndex;
+	std::vector<IncludeModel> includeModels;
 
 	//int32_t virtualModel;
 

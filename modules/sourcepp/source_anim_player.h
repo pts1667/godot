@@ -8,25 +8,21 @@
 
 #pragma once
 
+#include "source_mdl_animation_data.h"
+
 #include "core/error/error_list.h"
 #include "core/io/file_access.h"
 #include "scene/main/node.h"
 
-#include <mdlpp/structs/MDL.h>
-
 #include <cstddef>
-#include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace mdlpp {
-struct SampledAnimation;
 struct StudioModel;
 }
 
 class Skeleton3D;
-class SourcePPResolver;
 
 class SourceAnimPlayer : public Node {
 	GDCLASS(SourceAnimPlayer, Node);
@@ -59,18 +55,16 @@ class SourceAnimPlayer : public Node {
 		Vector3 knee_direction;
 	};
 
-	std::unique_ptr<mdlpp::StudioModel> model;
-	mutable std::unordered_map<int, std::unique_ptr<mdlpp::SampledAnimation>> sampled_animation_cache;
 	Vector<IKRuntimeChain> ik_runtime_chains;
 
-	Ref<SourcePPResolver> resolver;
-	String resolver_game_id;
+	Ref<SourceMDLAnimationData> animation_data;
 	String mdl_path;
 	String vtx_path;
 	String vvd_path;
 	NodePath skeleton_path;
 	ObjectID skeleton_cache;
 	Vector<int> model_to_skeleton_bones;
+	Vector<int> skeleton_to_model_bones;
 	PackedFloat32Array controller_values;
 
 	int sequence_descriptor = -1;
@@ -89,6 +83,8 @@ class SourceAnimPlayer : public Node {
 	Vector<uint8_t> _read_file_bytes(const String &p_path, Error *r_error) const;
 
 	Error _open_bytes(const Vector<uint8_t> &p_mdl_data, const Vector<uint8_t> &p_vtx_data, const Vector<uint8_t> &p_vvd_data, const Vector<uint8_t> &p_anim_block_data = Vector<uint8_t>());
+	Error _open_animation_data_resource();
+	void _close_model(bool p_clear_animation_data);
 	void _clear_ik_runtime();
 	void _rebuild_ik_runtime();
 	void _update_skeleton_cache();
@@ -98,16 +94,15 @@ class SourceAnimPlayer : public Node {
 	void _set_processing_enabled(bool p_enabled);
 	void _reset_controller_values();
 	void _apply_bone_controllers(PoseBuffer &r_pose) const;
-	const mdlpp::MDL::BoneController *_find_bone_controller(int p_input_field) const;
+	const SourceMDLAnimationData::BoneController *_find_bone_controller(int p_input_field) const;
 
 	void _initialize_pose_buffer(PoseBuffer &r_pose, bool p_delta) const;
-	bool _ensure_sampled_animation(int p_animation_descriptor) const;
-	const mdlpp::SampledAnimation *_get_sampled_animation(int p_animation_descriptor) const;
+	const SourceMDLAnimationData::SampledAnimation *_get_sampled_animation(int p_animation_descriptor) const;
 	double _get_sequence_cycles_per_second(int p_sequence_descriptor) const;
 	float _get_normalized_cycle(int p_sequence_descriptor, double p_time) const;
 	double _get_sequence_length(int p_sequence_descriptor) const;
-	void _sample_animation_track(const mdlpp::SampledAnimation &p_animation, int p_bone, float p_cycle, bool p_looping, Vector3 &r_position, Quaternion &r_rotation) const;
-	void _capture_ik_locks(const PoseBuffer &p_pose, const std::vector<mdlpp::MDL::IKLock> &p_ik_locks, int p_depth, Vector<PendingIKLock> &r_pending_locks) const;
+	void _sample_animation_track(const SourceMDLAnimationData::SampledAnimation &p_animation, int p_bone, float p_cycle, bool p_looping, Vector3 &r_position, Quaternion &r_rotation) const;
+	void _capture_ik_locks(const PoseBuffer &p_pose, const std::vector<SourceMDLAnimationData::IKLock> &p_ik_locks, int p_depth, Vector<PendingIKLock> &r_pending_locks) const;
 	void _capture_sequence_locks(const PoseBuffer &p_pose, int p_sequence_descriptor, int p_depth, Vector<PendingIKLock> &r_pending_locks) const;
 	void _apply_pending_ik_locks(const Vector<PendingIKLock> &p_pending_locks);
 	void _blend_pose(PoseBuffer &r_pose, const PoseBuffer &p_sample, int p_sequence_descriptor, float p_weight) const;
@@ -142,15 +137,13 @@ public:
 	SourceAnimPlayer();
 	~SourceAnimPlayer() override;
 
-	void set_resolver(const Ref<SourcePPResolver> &p_resolver);
-	Ref<SourcePPResolver> get_resolver() const { return resolver; }
-	void set_resolver_game_id(const String &p_game_id);
-	String get_resolver_game_id() const { return resolver_game_id; }
+	void set_animation_data(const Ref<SourceMDLAnimationData> &p_animation_data);
+	Ref<SourceMDLAnimationData> get_animation_data() const { return animation_data; }
 
 	Error open(const String &p_mdl_path, const String &p_vtx_path = String(), const String &p_vvd_path = String());
 	Error open_from_buffer(const PackedByteArray &p_mdl_data, const PackedByteArray &p_vtx_data, const PackedByteArray &p_vvd_data, const PackedByteArray &p_anim_block_data = PackedByteArray());
 	void close();
-	bool is_open() const { return model != nullptr; }
+	bool is_open() const { return animation_data.is_valid() && animation_data->has_required_data(); }
 	String get_mdl_path() const { return mdl_path; }
 	String get_vtx_path() const { return vtx_path; }
 	String get_vvd_path() const { return vvd_path; }
