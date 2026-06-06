@@ -54,7 +54,7 @@ func apply_ik_rule(rule_node: Node, pose: Dictionary, model_to_skeleton_bones: A
 	var chain_length := _get_chain_length(links, global_transforms)
 	var source_height := maxf(float(rule_node.get("height")), chain_length) * ray_height_scale
 	var source_drop := maxf(float(rule_node.get("drop")), chain_length) * ray_drop_scale
-	var source_floor := float(rule_node.get("floor"))
+	var source_floor := float(rule_node.get("source_floor"))
 	var ray_range := maxf(source_height + source_drop, min_ray_range)
 
 	var ray_from := end_transform.origin + Vector3.UP * source_height
@@ -83,11 +83,14 @@ func _resolve_skeleton() -> Skeleton3D:
 
 
 func _intersect_ground(ray_from: Vector3, ray_to: Vector3) -> Dictionary:
-	if root == null or root.get_world_3d() == null:
+	var root_3d := root as Node3D
+	if root_3d == null or not root_3d.is_inside_tree():
+		return {}
+	if root_3d.get_world_3d() == null:
 		return {}
 	var query := PhysicsRayQueryParameters3D.create(ray_from, ray_to)
 	query.collision_mask = collision_mask
-	return root.get_world_3d().direct_space_state.intersect_ray(query)
+	return root_3d.get_world_3d().direct_space_state.intersect_ray(query)
 
 
 func _get_chain_length(links: Array, global_transforms: Array[Transform3D]) -> float:

@@ -18,7 +18,7 @@ extends Node
 @export var contact := 0.0
 @export var height := 0.0
 @export var radius := 0.0
-@export var floor := 0.0
+@export var source_floor := 0.0
 @export var drop := 0.0
 @export var top := 0.0
 @export var attachment := ""
@@ -50,7 +50,7 @@ func configure(data: SourceMDLAnimationData, skeleton: NodePath, source_sequence
 	contact = float(rule_data.get("contact", 0.0))
 	height = float(rule_data.get("height", 0.0))
 	radius = float(rule_data.get("radius", 0.0))
-	floor = float(rule_data.get("floor", 0.0))
+	source_floor = float(rule_data.get("floor", 0.0))
 	drop = float(rule_data.get("drop", 0.0))
 	top = float(rule_data.get("top", 0.0))
 	attachment = String(rule_data.get("attachment", ""))

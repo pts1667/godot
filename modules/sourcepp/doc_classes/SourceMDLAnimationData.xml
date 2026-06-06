@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <class name="SourceMDLAnimationData" inherits="Resource" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
 	<brief_description>
-		Serialized Source MDL animation data used by SourceAnimPlayer.
+		Serialized Source MDL animation data used by the script-side Source MDL animation player.
 	</brief_description>
 	<description>
-		Stores the parsed animation information needed by [SourceAnimPlayer], including Source bone names, bone controllers, sequence metadata, IK metadata, and sampled animation tracks. Imported MDL scenes embed this resource so animation playback can work after scene reload without storing the original MDL, VTX, or VVD files.
-		The data is intentionally exposed as editable Godot arrays and dictionaries so tools and game scripts can inspect, patch, replace, or augment imported Source animations. A script-based reference player is available at [code]modules/sourcepp/scripts/source_script_anim_player.gd[/code] for projects that want to customize playback behavior outside the native [SourceAnimPlayer]. Script-side IK lifecycle helpers are available at [code]modules/sourcepp/scripts/source_ik_data.gd[/code], [code]source_ik_lock.gd[/code], and [code]source_ik_rule.gd[/code].
+		Stores the parsed animation information needed by the script-side Source MDL animation player, including Source bone names, bone controllers, sequence metadata, IK metadata, and sampled animation tracks. Imported MDL scenes embed this resource so animation playback can work after scene reload without storing the original MDL, VTX, or VVD files.
+		The data is intentionally exposed as editable Godot arrays and dictionaries so tools and game scripts can inspect, patch, replace, or augment imported Source animations. The default player is available at [code]modules/sourcepp/scripts/source_script_anim_player.gd[/code]. Script-side IK lifecycle helpers are available at [code]modules/sourcepp/scripts/source_ik_data.gd[/code], [code]source_ik_lock.gd[/code], and [code]source_ik_rule.gd[/code].
 		The script player also creates an [code]AnimBehaviours[/code] node under the imported MDL root. That node owns editable behavior [Resource] instances from [code]source_anim_behaviours.gd[/code], including default IK behavior resources for Source [code]IK_SELF[/code], [code]IK_WORLD[/code], [code]IK_GROUND[/code], [code]IK_RELEASE[/code], [code]IK_ATTACHMENT[/code], and [code]IK_UNLATCH[/code]. The same resource container is intended to host animation event behavior resources later.
 	</description>
 	<tutorials>

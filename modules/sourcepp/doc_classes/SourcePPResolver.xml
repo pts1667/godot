@@ -8,7 +8,7 @@
 		It can register local Source installs or Steam apps, build per-search-path maps of loose and VPK-backed entries, return the resolved source path for a virtual asset path, and read files such as [code]models/props/crate.mdl[/code] directly from registered content.
 		It can also mount the embedded Pakfile lump from a Source BSP so map-packed VMT, VTF, cubemap, or other assets resolve through the same lookup API.
 		If both a loose file and a VPK entry exist for the same virtual path, the loose file is preferred.
-		Classes such as [SourcePPMDL] and [SourceAnimPlayer] can use a resolver instance to fetch companion assets from VPKs instead of requiring loose files on disk.
+		Classes such as [SourcePPMDL] can use a resolver instance to fetch companion assets from VPKs instead of requiring loose files on disk.
 		[codeblock]
 		var resolver := SourcePPResolver.new()
 		resolver.register_steam_game(220, "hl2")

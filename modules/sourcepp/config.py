@@ -10,7 +10,6 @@ def configure(env):
 def get_doc_classes():
     return [
         "BSPShape3D",
-        "SourceAnimPlayer",
         "SourceMDLAnimationData",
         "SourcePPBrushArea3D",
         "SourcePPBrushBody3D",

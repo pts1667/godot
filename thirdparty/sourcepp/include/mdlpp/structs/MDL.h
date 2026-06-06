@@ -14,6 +14,8 @@ struct Bone {
 	enum Flags : int32_t {
 		FLAG_NONE = 0,
 		FLAG_FIXED_ALIGNMENT = 0x00100000,
+		FLAG_HAS_SAVEFRAME_POS = 0x00200000,
+		FLAG_HAS_SAVEFRAME_ROT = 0x00400000,
 	};
 
 	//int32_t nameIndex;
@@ -83,13 +85,14 @@ struct AnimDesc {
 	uint64_t fileOffset;
 
 	enum Flags : int32_t {
-		FLAG_NONE     = 0,
-		FLAG_RAW_POS  = 1 << 0,
-		FLAG_RAW_ROT  = 1 << 1,
-		FLAG_ANIM_POS = 1 << 2,
-		FLAG_ANIM_ROT = 1 << 3,
-		FLAG_DELTA    = 1 << 4,
-		FLAG_RAW_ROT2 = 1 << 5,
+		FLAG_NONE     = 0x0000,
+		FLAG_LOOPING  = 0x0001,
+		FLAG_SNAP     = 0x0002,
+		FLAG_DELTA    = 0x0004,
+		FLAG_AUTOPLAY = 0x0008,
+		FLAG_POST     = 0x0010,
+		FLAG_ALLZEROS = 0x0020,
+		FLAG_REALTIME = 0x0100,
 	};
 
 	//int32_t basePointer;

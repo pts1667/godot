@@ -184,7 +184,10 @@ bool MDL::open(const std::byte* data, std::size_t size) {
 			animDesc.fileOffset = animDescPos;
 
 			stream.skip<int32_t>();
-			parser::binary::readStringAtOffset(stream, animDesc.name);
+			const auto animDescNameIndex = stream.read<int32_t>();
+			if (animDescNameIndex > 0) {
+				animDesc.name = stream.at_string_u(static_cast<uint64_t>(animDescPos) + static_cast<uint64_t>(animDescNameIndex));
+			}
 			stream
 				.read(animDesc.fps)
 				.read(animDesc.flags)
@@ -237,8 +240,14 @@ bool MDL::open(const std::byte* data, std::size_t size) {
 			auto& sequenceDesc = this->sequenceDescs.emplace_back();
 
 			stream.skip<int32_t>();
-			parser::binary::readStringAtOffset(stream, sequenceDesc.label);
-			parser::binary::readStringAtOffset(stream, sequenceDesc.activityName);
+			const auto sequenceLabelIndex = stream.read<int32_t>();
+			if (sequenceLabelIndex > 0) {
+				sequenceDesc.label = stream.at_string_u(static_cast<uint64_t>(sequenceDescPos) + static_cast<uint64_t>(sequenceLabelIndex));
+			}
+			const auto sequenceActivityNameIndex = stream.read<int32_t>();
+			if (sequenceActivityNameIndex > 0) {
+				sequenceDesc.activityName = stream.at_string_u(static_cast<uint64_t>(sequenceDescPos) + static_cast<uint64_t>(sequenceActivityNameIndex));
+			}
 			stream
 				.read(sequenceDesc.flags)
 				.read(sequenceDesc.activity)

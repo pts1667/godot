@@ -8,7 +8,6 @@
 
 #include "sourcepp_mdl.h"
 
-#include "source_anim_player.h"
 #include "source_mdl_animation_data.h"
 #include "sourcepp_import_cache.h"
 #include "sourcepp_resolver.h"
@@ -16,6 +15,7 @@
 #include "utils/sourcepp_utils.h"
 
 #include "core/error/error_macros.h"
+#include "core/io/resource_loader.h"
 #include "core/math/transform_3d.h"
 #include "core/object/class_db.h"
 #include "scene/3d/bone_attachment_3d.h"
@@ -37,6 +37,12 @@
 namespace {
 
 constexpr float SOURCE_IMPORT_ROTATION_X = -1.5707963267948966f;
+const String SOURCE_SCRIPT_ANIM_PLAYER_PATH = "C:/Users/Thoma/Documents/sources/godot/modules/sourcepp/scripts/source_script_anim_player.gd";
+
+struct SourceAnimSectionInfo {
+	int32_t anim_block = -1;
+	int32_t anim_index = 0;
+};
 
 Transform3D _to_bone_rest(const mdlpp::MDL::Bone &p_bone) {
 	return Transform3D(Basis(SourcePPUtils::source_quaternion_to_quaternion(p_bone.rotationQuat)), SourcePPUtils::source_vector_to_vector3(p_bone.position));
@@ -1029,6 +1035,25 @@ Array SourcePPMDL::get_animation_descriptors() const {
 		anim_desc_info["zero_frame_index"] = anim_desc.zeroFrameIndex;
 		anim_desc_info["zero_frame_stall_time"] = anim_desc.zeroFrameStallTime;
 		anim_desc_info["has_inline_animation_data"] = anim_desc.animBlock == 0;
+		Array sections;
+		if (anim_desc.sectionIndex > 0 && anim_desc.sectionFrames > 0) {
+			const auto &mdl_data = get_model()->getMDLData();
+			const int section_count = (anim_desc.frameCount / anim_desc.sectionFrames) + 2;
+			for (int section_index = 0; section_index < section_count; section_index++) {
+				const uint64_t section_offset = anim_desc.fileOffset + static_cast<uint64_t>(anim_desc.sectionIndex) + sizeof(SourceAnimSectionInfo) * static_cast<uint64_t>(section_index);
+				if (section_offset + sizeof(SourceAnimSectionInfo) > mdl_data.size()) {
+					break;
+				}
+				SourceAnimSectionInfo section_info;
+				std::memcpy(&section_info, mdl_data.data() + section_offset, sizeof(SourceAnimSectionInfo));
+				Dictionary section_data;
+				section_data["section"] = section_index;
+				section_data["anim_block"] = section_info.anim_block;
+				section_data["anim_index"] = section_info.anim_index;
+				sections.push_back(section_data);
+			}
+		}
+		anim_desc_info["sections"] = sections;
 
 		Array movements;
 		for (const mdlpp::Movement &movement : anim_desc.movements) {
@@ -1352,12 +1377,12 @@ Ref<ArrayMesh> SourcePPMDL::create_mesh(int p_lod) const {
 	Ref<ArrayMesh> mesh;
 	mesh.instantiate();
 
-	Vector<Vector3> vertices;
-	Vector<Vector3> normals;
-	Vector<Vector2> uvs;
-	Vector<float> tangents;
-	Vector<int> bones;
-	Vector<float> weights;
+	PackedVector3Array vertices;
+	PackedVector3Array normals;
+	PackedVector2Array uvs;
+	PackedFloat32Array tangents;
+	PackedInt32Array bones;
+	PackedFloat32Array weights;
 	vertices.resize(static_cast<int>(baked_model.vertices.size()));
 	normals.resize(static_cast<int>(baked_model.vertices.size()));
 	uvs.resize(static_cast<int>(baked_model.vertices.size()));
@@ -1463,9 +1488,6 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 	ERR_FAIL_NULL_V_MSG(skeleton, nullptr, "Failed to create the imported skeleton.");
 	skeleton->set_name("Skeleton3D");
 
-	SourceAnimPlayer *anim_player = memnew(SourceAnimPlayer);
-	anim_player->set_name("SourceAnimPlayer");
-	anim_player->set("skeleton_path", NodePath("../Skeleton3D"));
 	Ref<SourceMDLAnimationData> animation_data;
 	animation_data.instantiate();
 	animation_data->set_mdl_path(mdl_path);
@@ -1476,17 +1498,9 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 	}
 	const Error animation_bake_error = animation_data->bake_from_studio_models(*get_model(), included_model_ptrs);
 	if (animation_bake_error != OK) {
-		memdelete(anim_player);
 		memdelete(skeleton);
 		ERR_FAIL_V_MSG(nullptr, "Failed to bake Source animation data for the imported model.");
 	}
-	anim_player->set_animation_data(animation_data);
-	if (!anim_player->is_open()) {
-		memdelete(anim_player);
-		memdelete(skeleton);
-		ERR_FAIL_V_MSG(nullptr, "Failed to initialize SourceAnimPlayer for the imported model.");
-	}
-	anim_player->set("sequence_descriptor", -1);
 	skeleton->reset_bone_poses();
 
 	Node3D *root = memnew(Node3D);
@@ -1620,7 +1634,6 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 	}
 
 	root->add_child(skeleton);
-	root->add_child(anim_player);
 	root->set_meta("sourcepp_mdl_skin_family", p_skin_family);
 	root->set_meta("sourcepp_mdl_lod_count", lod_count);
 	root->set_meta("sourcepp_mdl_visibility_range_step", visibility_step);
@@ -1631,11 +1644,28 @@ Node3D *SourcePPMDL::create_model_node(int p_skin_family, bool p_include_attachm
 	root->set_meta("sourcepp_included_mdl_paths", included_model_paths);
 	root->set_meta("sourcepp_phy_path", phy_collision_path);
 	root->set_meta("sourcepp_materials", get_materials());
-	root->set_meta("sourcepp_sequences", anim_player->get_sequence_names());
 	root->set_meta("sourcepp_animation_data", animation_data);
+	root->set_meta("sourcepp_sequences", animation_data->get_sequence_names());
 	root->set_meta("sourcepp_collision_source", collision_source);
 	root->set_meta("sourcepp_collision_body_count", collision_body_count);
 	root->set_meta("sourcepp_collision_shape_count", collision_shape_count);
+
+	Ref<Resource> script_player_script = ResourceLoader::load(SOURCE_SCRIPT_ANIM_PLAYER_PATH, "Script");
+	if (script_player_script.is_null()) {
+		memdelete(root);
+		ERR_FAIL_V_MSG(nullptr, vformat("Failed to load SourceScriptAnimPlayer script at %s.", SOURCE_SCRIPT_ANIM_PLAYER_PATH));
+	}
+
+	Node *anim_player = memnew(Node);
+	anim_player->set_name("SourceScriptAnimPlayer");
+	anim_player->set_script(script_player_script);
+	root->add_child(anim_player);
+	const Variant setup_result = anim_player->call("setup_from_imported_root", root);
+	if (setup_result.get_type() != Variant::BOOL || !bool(setup_result)) {
+		memdelete(root);
+		ERR_FAIL_V_MSG(nullptr, "Failed to initialize SourceScriptAnimPlayer for the imported model.");
+	}
+	anim_player->set("sequence_descriptor", -1);
 	return root;
 }
 

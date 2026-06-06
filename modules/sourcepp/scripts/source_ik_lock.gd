@@ -155,7 +155,7 @@ func _compute_pose_global_transform(bone: int, positions: Array, rotations: Arra
 	if computed[bone]:
 		return transforms[bone]
 
-	var transform := Transform3D(Basis(_sanitize_quaternion(rotations[bone])), positions[bone])
+	var pose_transform := Transform3D(Basis(_sanitize_quaternion(rotations[bone])), positions[bone])
 	var parent := -1
 	if _skeleton != null and bone < model_to_skeleton_bones.size():
 		var skeleton_bone := model_to_skeleton_bones[bone]
@@ -164,11 +164,11 @@ func _compute_pose_global_transform(bone: int, positions: Array, rotations: Arra
 			if skeleton_parent >= 0:
 				parent = model_to_skeleton_bones.find(skeleton_parent)
 	if parent >= 0:
-		transform = _compute_pose_global_transform(parent, positions, rotations, model_to_skeleton_bones, transforms, computed) * transform
+		pose_transform = _compute_pose_global_transform(parent, positions, rotations, model_to_skeleton_bones, transforms, computed) * pose_transform
 
-	transforms[bone] = transform
+	transforms[bone] = pose_transform
 	computed[bone] = true
-	return transform
+	return pose_transform
 
 
 func _sanitize_quaternion(value: Variant) -> Quaternion:

@@ -207,6 +207,8 @@ func _apply_solver_sources(sources: Array[Node]) -> void:
 	for source in sources:
 		if not is_instance_valid(source) or not bool(source.get("enabled")):
 			continue
+		if not _source_feeds_solver(source):
+			continue
 		var chain := int(source.get("chain"))
 		if chain < 0:
 			continue
@@ -233,6 +235,15 @@ func _get_source_weight(source: Node) -> float:
 	if source.has_method("update_rule"):
 		return clampf(float(source.get("current_weight")), 0.0, 1.0)
 	return 1.0
+
+
+func _source_feeds_solver(source: Node) -> bool:
+	if source.has_method("capture_from_pose"):
+		return true
+	if source.has_method("update_rule"):
+		var rule_type := int(source.get("type"))
+		return rule_type != 4 and rule_type != 6
+	return true
 
 
 func _ensure_solver(chain: int) -> Dictionary:

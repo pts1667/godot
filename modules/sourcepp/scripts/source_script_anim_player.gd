@@ -8,6 +8,8 @@ signal sequence_finished(sequence_descriptor: int)
 const STUDIO_LOOPING := 0x0001
 const STUDIO_AUTOPLAY := 0x0008
 const STUDIO_DELTA := 0x0004
+const STUDIO_CYCLEPOSE := 0x0080
+const STUDIO_REALTIME := 0x0100
 const STUDIO_LOCAL := 0x0200
 const STUDIO_POST := 0x0010
 const STUDIO_AL_SPLINE := 0x0040
@@ -35,12 +37,14 @@ const MAX_SEQUENCE_DEPTH := 16
 
 var current_time := 0.0
 var playing := false
+var overlay_sequences: Array[Dictionary] = []
 
 var _skeleton: Skeleton3D
 var _ik_data: Node
 var _ik_data_root: Node
 var _model_to_skeleton_bones: Array[int] = []
 var _animation_by_index := {}
+var _sampling_time := 0.0
 
 
 func _ready() -> void:
@@ -108,9 +112,51 @@ func play_sequence_by_name(sequence_name: StringName, from_time := 0.0) -> int:
 	return play_sequence(index, from_time)
 
 
+func clear_overlay_sequences() -> void:
+	overlay_sequences.clear()
+	if sequence_descriptor >= 0:
+		_apply_pose()
+
+
+func set_overlay_sequence(slot: int, sequence_index: int, weight := 1.0, from_time := 0.0) -> int:
+	if animation_data == null or not animation_data.has_required_data():
+		return ERR_UNCONFIGURED
+	if slot < 0:
+		return ERR_INVALID_PARAMETER
+	if sequence_index < 0:
+		if slot < overlay_sequences.size():
+			overlay_sequences.remove_at(slot)
+			if sequence_descriptor >= 0:
+				_apply_pose()
+		return OK
+	if sequence_index >= animation_data.get_sequence_count():
+		return ERR_INVALID_PARAMETER
+
+	while overlay_sequences.size() <= slot:
+		overlay_sequences.append({})
+	overlay_sequences[slot] = {
+		"sequence": sequence_index,
+		"time": maxf(from_time, 0.0),
+		"weight": clampf(weight, 0.0, 1.0),
+	}
+	if sequence_descriptor >= 0:
+		_apply_pose()
+	return OK
+
+
+func get_overlay_sequences() -> Array[Dictionary]:
+	return overlay_sequences.duplicate(true)
+
+
+func is_playing() -> bool:
+	return playing
+
+
 func stop(reset := false) -> void:
 	playing = false
 	current_time = 0.0
+	for overlay in overlay_sequences:
+		overlay["time"] = 0.0
 	if reset:
 		_reset_pose()
 	elif sequence_descriptor >= 0:
@@ -144,6 +190,7 @@ func advance(delta: float) -> void:
 		current_time = minf(current_time + scaled_delta, length)
 
 	_emit_events(previous_time, current_time, looped)
+	_advance_overlay_sequences(scaled_delta)
 	_apply_pose()
 
 	if not _sequence_loops(sequence) and is_equal_approx(current_time, length):
@@ -163,9 +210,12 @@ func _apply_pose() -> void:
 
 	var pose := _make_pose(false)
 	var pending_ik_locks: Array[Dictionary] = []
+	_sampling_time = current_time
 	var cycle := _get_normalized_cycle(sequence_descriptor, current_time)
 	if not _accumulate_sequence(pose, sequence_descriptor, cycle, 1.0, pending_ik_locks, 0):
 		return
+
+	_accumulate_overlay_sequences(pose, pending_ik_locks)
 
 	_accumulate_autoplay_sequences(pose, pending_ik_locks)
 	_apply_bone_controllers(pose)
@@ -213,7 +263,8 @@ func _accumulate_sequence(pose: Dictionary, sequence_index: int, cycle: float, w
 	for lock in sequence.get("ik_locks", []):
 		pending_ik_locks.append({"sequence": sequence_index, "lock": lock, "depth": depth})
 
-	var sequence_pose := _evaluate_sequence_pose(sequence_index, cycle, pending_ik_locks, depth)
+	var sequence_cycle := _resolve_sequence_cycle(sequence_index, cycle)
+	var sequence_pose := _evaluate_sequence_pose(sequence_index, sequence_cycle, pending_ik_locks, depth)
 	if sequence_pose.is_empty():
 		return false
 
@@ -224,10 +275,10 @@ func _accumulate_sequence(pose: Dictionary, sequence_index: int, cycle: float, w
 		if (int(layer.get("flags", 0)) & STUDIO_AL_LOCAL) != 0:
 			continue
 
-		var layer_cycle := cycle
+		var layer_cycle := sequence_cycle
 		var layer_weight := weight
 		if float(layer.get("start", 0.0)) != float(layer.get("end", 0.0)):
-			var layer_result := _resolve_layer(sequence, layer, cycle, weight, false)
+			var layer_result := _resolve_layer(sequence, layer, sequence_cycle, weight, false)
 			if layer_result.is_empty():
 				continue
 			layer_cycle = float(layer_result["cycle"])
@@ -243,6 +294,7 @@ func _evaluate_sequence_pose(sequence_index: int, cycle: float, pending_ik_locks
 		return {}
 
 	var sequence: Dictionary = animation_data.get_sequence(sequence_index)
+	cycle = _resolve_sequence_cycle(sequence_index, cycle)
 	var is_delta := _sequence_is_delta(sequence)
 	var pose := _make_pose(is_delta)
 	var group_size: Vector2i = sequence.get("group_size", Vector2i(1, 1))
@@ -297,24 +349,26 @@ func _sample_animation_pose(animation: Dictionary, cycle: float, looping: bool, 
 	var tracks: Array = animation.get("tracks", [])
 	for bone_index in range(min(tracks.size(), pose["positions"].size())):
 		var sample := _sample_track(tracks[bone_index], cycle, int(animation.get("frame_count", 0)), looping)
+		if sample.is_empty():
+			continue
 		pose["positions"][bone_index] = sample["position"]
 		pose["rotations"][bone_index] = sample["rotation"]
 	return pose
 
 
-func _sample_track(track: Dictionary, cycle: float, frame_count: int, looping: bool) -> Dictionary:
+func _sample_track(track: Dictionary, cycle: float, frame_count: int, _looping: bool) -> Dictionary:
 	var positions: PackedVector3Array = track.get("positions", PackedVector3Array())
 	var rotations: Array = track.get("rotations", [])
 	var available: int = min(positions.size(), rotations.size())
 	if frame_count <= 0 or available <= 0:
-		return {"position": Vector3.ZERO, "rotation": Quaternion()}
+		return {}
 
 	var frame := clampf(cycle, 0.0, 1.0) * float(maxi(frame_count - 1, 0))
 	var frame_a := clampi(floori(frame), 0, available - 1)
 	var frame_b := frame_a + 1
 	if frame_b >= available:
-		frame_b = 0 if looping and available > 1 else frame_a
-	var weight := frame - float(frame_a)
+		frame_b = frame_a
+	var weight := clampf(frame - float(frame_a), 0.0, 1.0)
 
 	return {
 		"position": positions[frame_a].lerp(positions[frame_b], weight),
@@ -362,8 +416,41 @@ func _accumulate_autoplay_sequences(pose: Dictionary, pending_ik_locks: Array[Di
 		var cycles_per_second := _get_sequence_cycles_per_second(sequence_index)
 		if cycles_per_second <= 0.0:
 			continue
-		var cycle := fposmod(current_time * cycles_per_second, 1.0)
+		var cycle := fposmod(_sampling_time * cycles_per_second, 1.0)
 		_accumulate_sequence(pose, sequence_index, cycle, 1.0, pending_ik_locks, 0)
+
+
+func _advance_overlay_sequences(delta: float) -> void:
+	if animation_data == null or delta <= 0.0:
+		return
+	for overlay_index in range(overlay_sequences.size()):
+		var overlay := overlay_sequences[overlay_index]
+		var sequence_index := int(overlay.get("sequence", -1))
+		if sequence_index < 0 or sequence_index >= animation_data.get_sequence_count():
+			continue
+		var length := _get_sequence_length(sequence_index)
+		if length <= 0.0:
+			continue
+		var sequence: Dictionary = animation_data.get_sequence(sequence_index)
+		var next_time := float(overlay.get("time", 0.0)) + delta
+		if _sequence_loops(sequence):
+			next_time = fposmod(next_time, length)
+		else:
+			next_time = minf(next_time, length)
+		overlay["time"] = next_time
+		overlay_sequences[overlay_index] = overlay
+
+
+func _accumulate_overlay_sequences(pose: Dictionary, pending_ik_locks: Array[Dictionary]) -> void:
+	if animation_data == null:
+		return
+	for overlay in overlay_sequences:
+		var sequence_index := int(overlay.get("sequence", -1))
+		var weight := clampf(float(overlay.get("weight", 1.0)), 0.0, 1.0)
+		if sequence_index < 0 or sequence_index >= animation_data.get_sequence_count() or weight <= 0.0:
+			continue
+		var cycle := _get_normalized_cycle(sequence_index, float(overlay.get("time", 0.0)))
+		_accumulate_sequence(pose, sequence_index, cycle, weight, pending_ik_locks, 0)
 
 
 func _make_pose(delta: bool) -> Dictionary:
@@ -526,6 +613,22 @@ func _get_normalized_cycle(sequence_index: int, time: float) -> float:
 	return clampf(time / length, 0.0, 1.0)
 
 
+func _resolve_sequence_cycle(sequence_index: int, cycle: float) -> float:
+	if animation_data == null or sequence_index < 0 or sequence_index >= animation_data.get_sequence_count():
+		return clampf(cycle, 0.0, 1.0)
+	var sequence: Dictionary = animation_data.get_sequence(sequence_index)
+	var flags := int(sequence.get("flags", 0))
+	if (flags & STUDIO_REALTIME) != 0:
+		var cycles_per_second := _get_sequence_cycles_per_second(sequence_index)
+		return 0.0 if cycles_per_second <= 0.0 else fposmod(_sampling_time * cycles_per_second, 1.0)
+	if (flags & STUDIO_CYCLEPOSE) != 0:
+		var cycle_pose_index := int(sequence.get("cycle_pose_index", -1))
+		return clampf(_get_axis_value(sequence, cycle_pose_index), 0.0, 1.0)
+	if _sequence_loops(sequence):
+		return fposmod(cycle, 1.0)
+	return clampf(cycle, 0.0, 1.0)
+
+
 func _resolve_axis_weights(sequence: Dictionary, axis: int, value: float) -> Dictionary:
 	var group_size: Vector2i = sequence.get("group_size", Vector2i(1, 1))
 	var axis_size := maxi(group_size[axis], 1)
@@ -545,15 +648,15 @@ func _resolve_axis_weights(sequence: Dictionary, axis: int, value: float) -> Dic
 			var end := keys[i + 1]
 			var in_range := (value >= start and value <= end) if ascending else (value <= start and value >= end)
 			if in_range:
-				var denominator := end - start
-				return {"a": i, "b": i + 1, "weight": 0.0 if is_zero_approx(denominator) else clampf((value - start) / denominator, 0.0, 1.0)}
+				var key_denominator := end - start
+				return {"a": i, "b": i + 1, "weight": 0.0 if is_zero_approx(key_denominator) else clampf((value - start) / key_denominator, 0.0, 1.0)}
 
 	var param_start: Vector2 = sequence.get("param_start", Vector2.ZERO)
 	var param_end: Vector2 = sequence.get("param_end", Vector2.ZERO)
-	var denominator := param_end[axis] - param_start[axis]
-	if is_zero_approx(denominator):
+	var param_denominator := param_end[axis] - param_start[axis]
+	if is_zero_approx(param_denominator):
 		return {"a": 0, "b": 0, "weight": 0.0}
-	var coordinate := clampf(((value - param_start[axis]) / denominator) * float(axis_size - 1), 0.0, float(axis_size - 1))
+	var coordinate := clampf(((value - param_start[axis]) / param_denominator) * float(axis_size - 1), 0.0, float(axis_size - 1))
 	var a := floori(coordinate)
 	var b := mini(a + 1, axis_size - 1)
 	return {"a": a, "b": b, "weight": 0.0 if a == b else coordinate - float(a)}
@@ -582,8 +685,8 @@ func _resolve_layer(sequence: Dictionary, layer: Dictionary, cycle: float, paren
 	var layer_weight := s
 	if not local_layer:
 		if (flags & STUDIO_AL_XFADE) != 0 and index > tail:
-			var denominator := 1.0 - parent_weight + s * parent_weight
-			layer_weight = 0.0 if is_zero_approx(denominator) else (s * parent_weight) / denominator
+			var xfade_denominator := 1.0 - parent_weight + s * parent_weight
+			layer_weight = 0.0 if is_zero_approx(xfade_denominator) else (s * parent_weight) / xfade_denominator
 		elif (flags & STUDIO_AL_NOBLEND) == 0:
 			layer_weight = parent_weight * s
 

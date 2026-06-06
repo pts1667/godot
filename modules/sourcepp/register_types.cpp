@@ -31,7 +31,6 @@
 #include "register_types.h"
 
 #include "core/object/class_db.h"
-#include "source_anim_player.h"
 #include "source_mdl_animation_data.h"
 #include "sourcepp_bsp.h"
 #include "entities/sourcepp_bsp_entity.h"
@@ -47,7 +46,6 @@ void initialize_sourcepp_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 
-	GDREGISTER_CLASS(SourceAnimPlayer);
 	GDREGISTER_CLASS(SourceMDLAnimationData);
 	GDREGISTER_CLASS(SourcePPBSP);
 	GDREGISTER_CLASS(BSPShape3D);

@@ -176,12 +176,50 @@ void _align_quaternion(const sourcepp::math::Quat &p_reference, sourcepp::math::
 	}
 }
 
+[[nodiscard]] float _hermite_spline(float p0, float p1, float p2, float p_t) {
+	const float t_sq = p_t * p_t;
+	const float t_cube = p_t * t_sq;
+	const float b1 = 2.0f * t_cube - 3.0f * t_sq + 1.0f;
+	const float b2 = 1.0f - b1;
+	const float b3 = t_cube - 2.0f * t_sq + p_t;
+	const float b4 = t_cube - t_sq;
+	return p1 * b1 + p2 * b2 + (p1 - p0) * b3 + (p2 - p1) * b4;
+}
+
+[[nodiscard]] sourcepp::math::Vec3f _hermite_spline(const sourcepp::math::Vec3f &p0, const sourcepp::math::Vec3f &p1, const sourcepp::math::Vec3f &p2, float p_t) {
+	return {
+		_hermite_spline(p0[0], p1[0], p2[0], p_t),
+		_hermite_spline(p0[1], p1[1], p2[1], p_t),
+		_hermite_spline(p0[2], p1[2], p2[2], p_t),
+	};
+}
+
+[[nodiscard]] bool _can_read(std::size_t p_size, uint64_t p_offset, uint64_t p_bytes) {
+	return p_offset <= p_size && p_bytes <= p_size - p_offset;
+}
+
 [[nodiscard]] sourcepp::math::Quat _quat_normalized(const sourcepp::math::Quat &p_quat) {
 	const float length_sq = p_quat.dot(p_quat);
 	if (length_sq <= 0.0f) {
 		return {0.0f, 0.0f, 0.0f, 1.0f};
 	}
 	return p_quat / std::sqrt(length_sq);
+}
+
+[[nodiscard]] sourcepp::math::Quat _quat_aligned_to(const sourcepp::math::Quat &p_reference, sourcepp::math::Quat p_quat) {
+	_align_quaternion(p_reference, p_quat);
+	return p_quat;
+}
+
+[[nodiscard]] sourcepp::math::Quat _hermite_spline(const sourcepp::math::Quat &p0, const sourcepp::math::Quat &p1, const sourcepp::math::Quat &p2, float p_t) {
+	const sourcepp::math::Quat q0 = _quat_aligned_to(p2, p0);
+	const sourcepp::math::Quat q1 = _quat_aligned_to(p2, p1);
+	return _quat_normalized({
+		_hermite_spline(q0[0], q1[0], p2[0], p_t),
+		_hermite_spline(q0[1], q1[1], p2[1], p_t),
+		_hermite_spline(q0[2], q1[2], p2[2], p_t),
+		_hermite_spline(q0[3], q1[3], p2[3], p_t),
+	});
 }
 
 [[nodiscard]] sourcepp::math::Quat _quat_conjugated(const sourcepp::math::Quat &p_quat) {
@@ -466,14 +504,59 @@ void _apply_local_hierarchy(const mdlpp::StudioModel &p_model, const mdlpp::MDL:
 	return true;
 }
 
+[[nodiscard]] bool _resolve_anim_block_stream(const mdlpp::StudioModel &p_model, const mdlpp::MDL::AnimDesc &p_anim_desc, int32_t p_block, int32_t p_index, ResolvedAnimStream &r_stream) {
+	if (p_index < 0 || p_block < 0 || (p_block == 0 && p_index <= 0)) {
+		return false;
+	}
+
+	if (p_block == 0) {
+		r_stream.data = p_model.getMDLData().data();
+		r_stream.size = p_model.getMDLData().size();
+		r_stream.animOffset = p_anim_desc.fileOffset + static_cast<uint64_t>(p_index);
+		return r_stream.data != nullptr && r_stream.animOffset < r_stream.size;
+	}
+
+	if (p_block >= static_cast<int32_t>(p_model.mdl.animBlocks.size())) {
+		return false;
+	}
+
+	const auto &anim_block = p_model.mdl.animBlocks[static_cast<size_t>(p_block)];
+	const auto &anim_block_data = p_model.getAnimBlockData();
+	if (anim_block_data.empty() || anim_block.dataStart < 0 || anim_block.dataEnd <= anim_block.dataStart) {
+		return false;
+	}
+
+	const uint64_t anim_offset = static_cast<uint64_t>(anim_block.dataStart) + static_cast<uint64_t>(p_index);
+	if (anim_offset >= anim_block_data.size() || anim_offset >= static_cast<uint64_t>(anim_block.dataEnd)) {
+		return false;
+	}
+
+	r_stream.data = anim_block_data.data();
+	r_stream.size = anim_block_data.size();
+	r_stream.animOffset = anim_offset;
+	return true;
+}
+
+[[nodiscard]] bool _read_anim_section(const mdlpp::StudioModel &p_model, const mdlpp::MDL::AnimDesc &p_anim_desc, int p_section, RawAnimSections &r_section) {
+	const uint64_t section_offset = p_anim_desc.fileOffset + static_cast<uint64_t>(p_anim_desc.sectionIndex) + sizeof(RawAnimSections) * static_cast<uint64_t>(p_section);
+	if (!_can_read(p_model.getMDLData().size(), section_offset, sizeof(RawAnimSections))) {
+		return false;
+	}
+	BufferStreamReadOnly stream{p_model.getMDLData().data(), p_model.getMDLData().size()};
+	r_section = stream.at<RawAnimSections>(static_cast<int64_t>(section_offset));
+	return true;
+}
+
 [[nodiscard]] bool _resolve_anim_stream(const mdlpp::StudioModel &p_model, const mdlpp::MDL::AnimDesc &p_anim_desc, int p_frame, ResolvedAnimStream &r_stream) {
 	int32_t block = p_anim_desc.animBlock;
 	int32_t index = p_anim_desc.animIndex;
 	int section = 0;
+	bool used_sections = false;
 	r_stream = {};
 	r_stream.localFrame = p_frame;
 
 	if (p_anim_desc.sectionFrames != 0) {
+		used_sections = true;
 		if (p_anim_desc.frameCount > p_anim_desc.sectionFrames && p_frame == p_anim_desc.frameCount - 1) {
 			r_stream.localFrame = 0;
 			section = (p_anim_desc.frameCount / p_anim_desc.sectionFrames) + 1;
@@ -486,41 +569,120 @@ void _apply_local_hierarchy(const mdlpp::StudioModel &p_model, const mdlpp::MDL:
 			return false;
 		}
 
-		BufferStreamReadOnly stream{p_model.getMDLData().data(), p_model.getMDLData().size()};
-		const RawAnimSections anim_section = stream.at<RawAnimSections>(static_cast<int64_t>(p_anim_desc.fileOffset + static_cast<uint64_t>(p_anim_desc.sectionIndex) + sizeof(RawAnimSections) * static_cast<uint64_t>(section)));
+		RawAnimSections anim_section;
+		if (!_read_anim_section(p_model, p_anim_desc, section, anim_section)) {
+			return false;
+		}
 		block = anim_section.animBlock;
 		index = anim_section.animIndex;
 	}
 
-	if (index <= 0 || block < 0) {
+	if (block == -1 || (!used_sections && index <= 0)) {
 		return false;
 	}
 
-	if (block == 0) {
-		r_stream.data = p_model.getMDLData().data();
-		r_stream.size = p_model.getMDLData().size();
-		r_stream.animOffset = p_anim_desc.fileOffset + static_cast<uint64_t>(index);
-		return r_stream.data != nullptr && r_stream.animOffset < r_stream.size;
+	if (_resolve_anim_block_stream(p_model, p_anim_desc, block, index, r_stream)) {
+		return true;
 	}
 
-	if (block >= static_cast<int32_t>(p_model.mdl.animBlocks.size())) {
+	if (!used_sections) {
 		return false;
 	}
 
-	const auto &anim_block = p_model.mdl.animBlocks[static_cast<size_t>(block)];
-	const auto &anim_block_data = p_model.getAnimBlockData();
-	if (anim_block_data.empty() || anim_block.dataStart < 0 || anim_block.dataEnd <= anim_block.dataStart) {
+	while (--section >= 0) {
+		RawAnimSections fallback_section;
+		if (!_read_anim_section(p_model, p_anim_desc, section, fallback_section)) {
+			continue;
+		}
+		if (_resolve_anim_block_stream(p_model, p_anim_desc, fallback_section.animBlock, fallback_section.animIndex, r_stream)) {
+			r_stream.localFrame = p_anim_desc.sectionFrames - 1;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool _apply_zero_frame_data(const mdlpp::StudioModel &p_model, const mdlpp::MDL::AnimDesc &p_anim_desc, int p_frame, mdlpp::SampledAnimation &r_animation) {
+	if (p_anim_desc.zeroFrameIndex <= 0 || p_anim_desc.zeroFrameCount <= 0 || p_model.getMDLData().empty()) {
 		return false;
 	}
 
-	const uint64_t anim_offset = static_cast<uint64_t>(anim_block.dataStart) + static_cast<uint64_t>(index);
-	if (anim_offset >= anim_block_data.size() || anim_offset >= static_cast<uint64_t>(anim_block.dataEnd)) {
+	const auto &mdl_data = p_model.getMDLData();
+	uint64_t data_offset = p_anim_desc.fileOffset + static_cast<uint64_t>(p_anim_desc.zeroFrameIndex);
+	const int zero_frame_count = p_anim_desc.zeroFrameCount;
+	BufferStreamReadOnly stream{mdl_data.data(), mdl_data.size()};
+
+	if (zero_frame_count == 1) {
+		for (size_t bone_index = 0; bone_index < p_model.mdl.bones.size(); bone_index++) {
+			const mdlpp::MDL::Bone &bone = p_model.mdl.bones[bone_index];
+			if (bone.flags & mdlpp::MDL::Bone::FLAG_HAS_SAVEFRAME_POS) {
+				if (!_can_read(mdl_data.size(), data_offset, sizeof(sourcepp::math::Vec3f16))) {
+					return false;
+				}
+				if (bone_index < r_animation.tracks.size() && p_frame >= 0 && p_frame < static_cast<int>(r_animation.tracks[bone_index].positions.size())) {
+					r_animation.tracks[bone_index].positions[static_cast<size_t>(p_frame)] = stream.at<sourcepp::math::Vec3f16>(static_cast<int64_t>(data_offset)).template to<3, float>();
+				}
+				data_offset += sizeof(sourcepp::math::Vec3f16);
+			}
+			if (bone.flags & mdlpp::MDL::Bone::FLAG_HAS_SAVEFRAME_ROT) {
+				if (!_can_read(mdl_data.size(), data_offset, sizeof(sourcepp::math::QuatCompressed64))) {
+					return false;
+				}
+				if (bone_index < r_animation.tracks.size() && p_frame >= 0 && p_frame < static_cast<int>(r_animation.tracks[bone_index].rotations.size())) {
+					r_animation.tracks[bone_index].rotations[static_cast<size_t>(p_frame)] = stream.at<sourcepp::math::QuatCompressed64>(static_cast<int64_t>(data_offset)).decompress();
+				}
+				data_offset += sizeof(sourcepp::math::QuatCompressed64);
+			}
+		}
+		return true;
+	}
+
+	if (p_anim_desc.zeroFrameSpan <= 0) {
 		return false;
 	}
 
-	r_stream.data = anim_block_data.data();
-	r_stream.size = anim_block_data.size();
-	r_stream.animOffset = anim_offset;
+	int index = p_frame / p_anim_desc.zeroFrameSpan;
+	float s = 0.0f;
+	if (index >= zero_frame_count - 1) {
+		index = zero_frame_count - 2;
+		s = 1.0f;
+	} else {
+		s = std::clamp((static_cast<float>(p_frame) - static_cast<float>(index * p_anim_desc.zeroFrameSpan)) / static_cast<float>(p_anim_desc.zeroFrameSpan), 0.0f, 1.0f);
+	}
+
+	const int i0 = std::max(index - 1, 0);
+	const int i1 = index;
+	const int i2 = std::min(index + 1, zero_frame_count - 1);
+	for (size_t bone_index = 0; bone_index < p_model.mdl.bones.size(); bone_index++) {
+		const mdlpp::MDL::Bone &bone = p_model.mdl.bones[bone_index];
+		if (bone.flags & mdlpp::MDL::Bone::FLAG_HAS_SAVEFRAME_POS) {
+			const uint64_t bytes = sizeof(sourcepp::math::Vec3f16) * static_cast<uint64_t>(zero_frame_count);
+			if (!_can_read(mdl_data.size(), data_offset, bytes)) {
+				return false;
+			}
+			if (bone_index < r_animation.tracks.size() && p_frame >= 0 && p_frame < static_cast<int>(r_animation.tracks[bone_index].positions.size())) {
+				const sourcepp::math::Vec3f p0 = stream.at<sourcepp::math::Vec3f16>(static_cast<int64_t>(data_offset + sizeof(sourcepp::math::Vec3f16) * static_cast<uint64_t>(i0))).template to<3, float>();
+				const sourcepp::math::Vec3f p1 = stream.at<sourcepp::math::Vec3f16>(static_cast<int64_t>(data_offset + sizeof(sourcepp::math::Vec3f16) * static_cast<uint64_t>(i1))).template to<3, float>();
+				const sourcepp::math::Vec3f p2 = stream.at<sourcepp::math::Vec3f16>(static_cast<int64_t>(data_offset + sizeof(sourcepp::math::Vec3f16) * static_cast<uint64_t>(i2))).template to<3, float>();
+				r_animation.tracks[bone_index].positions[static_cast<size_t>(p_frame)] = _hermite_spline(p0, p1, p2, s);
+			}
+			data_offset += bytes;
+		}
+		if (bone.flags & mdlpp::MDL::Bone::FLAG_HAS_SAVEFRAME_ROT) {
+			const uint64_t bytes = sizeof(sourcepp::math::QuatCompressed64) * static_cast<uint64_t>(zero_frame_count);
+			if (!_can_read(mdl_data.size(), data_offset, bytes)) {
+				return false;
+			}
+			if (bone_index < r_animation.tracks.size() && p_frame >= 0 && p_frame < static_cast<int>(r_animation.tracks[bone_index].rotations.size())) {
+				const sourcepp::math::Quat q0 = stream.at<sourcepp::math::QuatCompressed64>(static_cast<int64_t>(data_offset + sizeof(sourcepp::math::QuatCompressed64) * static_cast<uint64_t>(i0))).decompress();
+				const sourcepp::math::Quat q1 = stream.at<sourcepp::math::QuatCompressed64>(static_cast<int64_t>(data_offset + sizeof(sourcepp::math::QuatCompressed64) * static_cast<uint64_t>(i1))).decompress();
+				const sourcepp::math::Quat q2 = stream.at<sourcepp::math::QuatCompressed64>(static_cast<int64_t>(data_offset + sizeof(sourcepp::math::QuatCompressed64) * static_cast<uint64_t>(i2))).decompress();
+				r_animation.tracks[bone_index].rotations[static_cast<size_t>(p_frame)] = _hermite_spline(q0, q1, q2, s);
+			}
+			data_offset += bytes;
+		}
+	}
 	return true;
 }
 
@@ -740,6 +902,7 @@ bool StudioModel::sampleAnimation(int animDescIndex, SampledAnimation& out) cons
 	for (int frame = 0; frame < anim_desc->frameCount; frame++) {
 		ResolvedAnimStream resolved_stream;
 		if (!_resolve_anim_stream(*this, *anim_desc, frame, resolved_stream)) {
+			_apply_zero_frame_data(*this, *anim_desc, frame, out);
 			if (anim_desc->localHierarchyCount > 0) {
 				std::vector<sourcepp::math::Vec3f> frame_positions(out.tracks.size());
 				std::vector<sourcepp::math::Quat> frame_rotations(out.tracks.size());
@@ -760,7 +923,7 @@ bool StudioModel::sampleAnimation(int animDescIndex, SampledAnimation& out) cons
 		BufferStreamReadOnly frame_stream{resolved_stream.data, resolved_stream.size};
 		uint64_t anim_offset = resolved_stream.animOffset;
 
-		while (anim_offset > 0) {
+		while (anim_offset < resolved_stream.size) {
 			const RawAnimHeader header = frame_stream.at<RawAnimHeader>(static_cast<int64_t>(anim_offset));
 			if (header.bone >= out.tracks.size()) {
 				break;

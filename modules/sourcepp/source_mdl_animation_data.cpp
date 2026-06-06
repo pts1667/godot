@@ -12,7 +12,15 @@
 
 #include <mdlpp/mdlpp.h>
 
+#include <cstring>
+#include <unordered_map>
+
 namespace {
+
+struct SourceAnimSectionInfo {
+	int32_t anim_block = -1;
+	int32_t anim_index = 0;
+};
 
 Vector3 to_vector3(const sourcepp::math::Vec3f &p_vector) {
 	return Vector3(p_vector[0], p_vector[1], p_vector[2]);
@@ -69,6 +77,30 @@ Dictionary encode_ik_rule(const mdlpp::MDL::IKRule &p_rule, int p_animation_inde
 		out["blend_cell"] = p_blend_cell;
 	}
 	return out;
+}
+
+Array encode_anim_sections(const mdlpp::StudioModel &p_model, const mdlpp::MDL::AnimDesc &p_anim_desc) {
+	Array sections;
+	if (p_anim_desc.sectionIndex <= 0 || p_anim_desc.sectionFrames <= 0) {
+		return sections;
+	}
+
+	const auto &mdl_data = p_model.getMDLData();
+	const int section_count = (p_anim_desc.frameCount / p_anim_desc.sectionFrames) + 2;
+	for (int section_index = 0; section_index < section_count; section_index++) {
+		const uint64_t section_offset = p_anim_desc.fileOffset + static_cast<uint64_t>(p_anim_desc.sectionIndex) + sizeof(SourceAnimSectionInfo) * static_cast<uint64_t>(section_index);
+		if (section_offset + sizeof(SourceAnimSectionInfo) > mdl_data.size()) {
+			break;
+		}
+		SourceAnimSectionInfo section_info;
+		std::memcpy(&section_info, mdl_data.data() + section_offset, sizeof(SourceAnimSectionInfo));
+		Dictionary section_data;
+		section_data["section"] = section_index;
+		section_data["anim_block"] = section_info.anim_block;
+		section_data["anim_index"] = section_info.anim_index;
+		sections.push_back(section_data);
+	}
+	return sections;
 }
 
 SourceMDLAnimationData::IKLock decode_ik_lock(const Dictionary &p_data) {
@@ -137,6 +169,10 @@ Error SourceMDLAnimationData::bake_from_studio_models(const mdlpp::StudioModel &
 		baked_bone_names.push_back(from_utf8(bone.name));
 	}
 	const int base_bone_count = baked_bone_names.size();
+	std::unordered_map<std::string, int> base_bone_by_name;
+	for (int bone_index = 0; bone_index < static_cast<int>(p_model.mdl.bones.size()); bone_index++) {
+		base_bone_by_name[p_model.mdl.bones[static_cast<size_t>(bone_index)].name] = bone_index;
+	}
 
 	Array baked_bone_controllers;
 	for (const mdlpp::MDL::BoneController &controller : p_model.mdl.boneControllers) {
@@ -183,6 +219,14 @@ Error SourceMDLAnimationData::bake_from_studio_models(const mdlpp::StudioModel &
 	auto append_model_animation_data = [&](const mdlpp::StudioModel &p_source_model) {
 		const int local_sequence_offset = sequence_offset;
 		const int local_animation_offset = animation_offset;
+		std::vector<int> base_to_local_bone;
+		base_to_local_bone.assign(static_cast<size_t>(base_bone_count), -1);
+		for (int local_bone = 0; local_bone < static_cast<int>(p_source_model.mdl.bones.size()); local_bone++) {
+			const auto base_bone = base_bone_by_name.find(p_source_model.mdl.bones[static_cast<size_t>(local_bone)].name);
+			if (base_bone != base_bone_by_name.end() && base_bone->second >= 0 && base_bone->second < base_bone_count) {
+				base_to_local_bone[static_cast<size_t>(base_bone->second)] = local_bone;
+			}
+		}
 
 		for (const mdlpp::MDL::SequenceDesc &sequence : p_source_model.mdl.sequenceDescs) {
 			Dictionary data;
@@ -237,7 +281,8 @@ Error SourceMDLAnimationData::bake_from_studio_models(const mdlpp::StudioModel &
 
 			PackedFloat32Array bone_weights;
 			for (int bone_index = 0; bone_index < base_bone_count; bone_index++) {
-				const float weight = bone_index < static_cast<int>(sequence.boneWeights.size()) ? sequence.boneWeights[static_cast<size_t>(bone_index)] : 1.0f;
+				const int local_bone = base_to_local_bone[static_cast<size_t>(bone_index)];
+				const float weight = local_bone >= 0 && local_bone < static_cast<int>(sequence.boneWeights.size()) ? sequence.boneWeights[static_cast<size_t>(local_bone)] : 0.0f;
 				bone_weights.push_back(weight);
 			}
 			data["bone_weights"] = bone_weights;
@@ -272,10 +317,20 @@ Error SourceMDLAnimationData::bake_from_studio_models(const mdlpp::StudioModel &
 			}
 
 			Dictionary data;
+			const mdlpp::MDL::AnimDesc &anim_desc = p_source_model.mdl.animDescs[static_cast<size_t>(animation_index)];
 			data["animation_index"] = local_animation_offset + sampled.animationIndex;
+			data["name"] = from_utf8(anim_desc.name);
 			data["fps"] = sampled.fps;
 			data["frame_count"] = sampled.frameCount;
 			data["flags"] = static_cast<int>(sampled.flags);
+			data["anim_block"] = anim_desc.animBlock;
+			data["anim_index"] = anim_desc.animIndex;
+			data["section_index"] = anim_desc.sectionIndex;
+			data["section_frames"] = anim_desc.sectionFrames;
+			data["sections"] = encode_anim_sections(p_source_model, anim_desc);
+			data["zero_frame_span"] = anim_desc.zeroFrameSpan;
+			data["zero_frame_count"] = anim_desc.zeroFrameCount;
+			data["zero_frame_index"] = anim_desc.zeroFrameIndex;
 			Array ik_rules;
 			const std::vector<mdlpp::MDL::IKRule> animation_ik_rules = p_source_model.getAnimationIKRules(animation_index);
 			for (const mdlpp::MDL::IKRule &rule : animation_ik_rules) {
@@ -287,8 +342,9 @@ Error SourceMDLAnimationData::bake_from_studio_models(const mdlpp::StudioModel &
 				Dictionary track_data;
 				PackedVector3Array positions;
 				Array rotations;
-				if (bone_index < static_cast<int>(sampled.tracks.size())) {
-					const mdlpp::SampledAnimationTrack &track = sampled.tracks[static_cast<size_t>(bone_index)];
+				const int local_bone = base_to_local_bone[static_cast<size_t>(bone_index)];
+				if (local_bone >= 0 && local_bone < static_cast<int>(sampled.tracks.size())) {
+					const mdlpp::SampledAnimationTrack &track = sampled.tracks[static_cast<size_t>(local_bone)];
 					for (const sourcepp::math::Vec3f &position : track.positions) {
 						positions.push_back(to_vector3(position));
 					}
